@@ -73,6 +73,59 @@ CHUNK_SIZE = 1000
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# CIM-10 chapter computation (per CIM-10 international structure)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Each entry : (first_char, prefix_start_inclusive, prefix_end_inclusive, chapitre)
+# Prefix bounds are the first 3 chars of the code (e.g. 'A00', 'B99').
+_CIM10_CHAPTER_RANGES: list[tuple[str, str, str, str]] = [
+    ("A", "A00", "B99", "01"),  # Maladies infectieuses
+    ("B", "A00", "B99", "01"),
+    ("C", "C00", "D48", "02"),  # Tumeurs
+    ("D", "C00", "D48", "02"),  # D00-D48 = tumeurs bénignes/incertaines
+    ("D", "D50", "D89", "03"),  # D50-D89 = sang
+    ("E", "E00", "E90", "04"),  # Endocrinien / métabolique
+    ("F", "F00", "F99", "05"),  # Troubles mentaux
+    ("G", "G00", "G99", "06"),  # Système nerveux
+    ("H", "H00", "H59", "07"),  # Œil
+    ("H", "H60", "H95", "08"),  # Oreille
+    ("I", "I00", "I99", "09"),  # Appareil circulatoire
+    ("J", "J00", "J99", "10"),  # Appareil respiratoire
+    ("K", "K00", "K93", "11"),  # Appareil digestif
+    ("L", "L00", "L99", "12"),  # Peau et tissu cellulaire sous-cutané
+    ("M", "M00", "M99", "13"),  # Ostéo-articulaire
+    ("N", "N00", "N99", "14"),  # Appareil génito-urinaire
+    ("O", "O00", "O99", "15"),  # Grossesse, accouchement, puerpéralité
+    ("P", "P00", "P96", "16"),  # Affections période périnatale
+    ("Q", "Q00", "Q99", "17"),  # Malformations congénitales
+    ("R", "R00", "R99", "18"),  # Symptômes, signes, anomalies cliniques
+    ("S", "S00", "T98", "19"),  # Lésions traumatiques / empoisonnements
+    ("T", "S00", "T98", "19"),
+    ("V", "V01", "Y98", "20"),  # Causes externes morbidité / mortalité
+    ("W", "V01", "Y98", "20"),
+    ("X", "V01", "Y98", "20"),
+    ("Y", "V01", "Y98", "20"),
+    ("Z", "Z00", "Z99", "21"),  # Facteurs influant état de santé
+    ("U", "U00", "U99", "22"),  # Codes à usage spécial (COVID, etc.)
+]
+
+
+def cim10_chapter(code: str) -> Optional[str]:
+    """Return the CIM-10 chapter number ('01'..'22') for a given code.
+    Returns None if no chapter can be determined."""
+    if not code:
+        return None
+    code3 = code[:3].upper()
+    if not code3 or not code3[0].isalpha():
+        return None
+    first = code3[0]
+    for letter, start, end, chap in _CIM10_CHAPTER_RANGES:
+        if first == letter and start <= code3 <= end:
+            return chap
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -214,9 +267,8 @@ def ingest_cim10_codes(
         if not code or code in seen_codes:
             continue
         seen_codes.add(code)
-        # Determine chapitre : first character of the code if alpha
-        chap_char = code[0] if code else None
-        chapitre = chap_char if chap_char and chap_char.isalpha() else None
+        # Determine chapitre using proper CIM-10 chapter computation (01-22)
+        chapitre = cim10_chapter(code)
 
         batch.append((
             code,

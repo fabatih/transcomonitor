@@ -206,10 +206,18 @@ class TestIngestCim10:
         z999 = next(r for r in rows if r["code"] == "Z999")
         assert z999["type_code"] == "FR_ONLY"
 
-    def test_ingest_chapitre_from_first_char(self, con, synthetic_xlsx):
+    def test_ingest_chapitre_proper_cim10(self, con, synthetic_xlsx):
+        """Chapter should be derived per CIM-10 international structure (01..22)."""
         ingest.ingest_cim10_codes(con, synthetic_xlsx)
+        # A00 → A00-B99 → chapter 01
         row = con.execute("SELECT chapitre FROM cim10_codes WHERE code='A00'").fetchone()
-        assert row["chapitre"] == "A"
+        assert row["chapitre"] == "01"
+        # A011 → same chapter
+        row = con.execute("SELECT chapitre FROM cim10_codes WHERE code='A011'").fetchone()
+        assert row["chapitre"] == "01"
+        # Z999 → Z00-Z99 → chapter 21
+        row = con.execute("SELECT chapitre FROM cim10_codes WHERE code='Z999'").fetchone()
+        assert row["chapitre"] == "21"
 
 
 # ─────────────────────────────────────────────────────────────────────────
