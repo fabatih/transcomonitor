@@ -1,0 +1,229 @@
+/* =====================================================================
+   custom.css — icd11pycode application styles
+   Flatly theme (bootswatch) — primary: #2c3e50
+   ===================================================================== */
+
+/* ── Global ────────────────────────────────────────────────────────── */
+body {
+  font-size: 0.95rem;
+  background: #f8f9fa;
+}
+
+/* ── Login page ────────────────────────────────────────────────────── */
+.card-header {
+  background-color: #2c3e50;
+  color: white;
+}
+
+/* ── Navbar ─────────────────────────────────────────────────────────── */
+.navbar-brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ── Navigation pills / tabs ───────────────────────────────────────── */
+.nav-pills .nav-link {
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  padding: 0.45rem 1rem;
+  color: #2c3e50;
+  transition: all 0.15s ease;
+}
+.nav-pills .nav-link:hover {
+  background: rgba(44, 62, 80, 0.08);
+}
+.nav-pills .nav-link.active {
+  background: #2c3e50;
+  color: white;
+}
+
+/* Admin sub-tabs */
+.nav-tabs .nav-link {
+  font-size: 0.83rem;
+}
+
+/* ── Code table ────────────────────────────────────────────────────── */
+.table .badge {
+  font-size: 0.73rem;
+  font-weight: 500;
+}
+
+.table a.fw-bold {
+  color: #2c3e50;
+}
+.table a.fw-bold:hover {
+  color: #18bc9c;
+  text-decoration: underline !important;
+}
+
+/* ── CRH document display ──────────────────────────────────────────── */
+.crh-content {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-size: 0.92rem;
+  line-height: 1.65;
+  color: #333;
+}
+.crh-content h1, .crh-content h2, .crh-content h3 {
+  color: #2c3e50;
+  font-family: inherit;
+}
+.crh-content table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.crh-content table td, .crh-content table th {
+  border: 1px solid #dee2e6;
+  padding: 0.4rem;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
+.card {
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 0.5rem;
+}
+.card.shadow-sm, .card.shadow-lg {
+  border: none;
+}
+.card .card-header {
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+
+/* Stat cards in admin */
+.card.shadow-sm .card-body {
+  border-radius: 0.5rem;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+.btn-sm {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 0.35rem;
+}
+.btn-outline-primary {
+  border-color: #2c3e50;
+  color: #2c3e50;
+}
+.btn-outline-primary:hover {
+  background: #2c3e50;
+  color: white;
+}
+
+/* ── ECT container ─────────────────────────────────────────────────── */
+.ect-container {
+  position: relative;
+  margin-bottom: 0.5rem;
+}
+.ect-container .ctw-input {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 0.92rem;
+  border: 1px solid #ced4da;
+  border-radius: 0.375rem;
+}
+.ect-container .ctw-window {
+  position: relative;
+  z-index: 1050;
+}
+
+/* ── EB modal ──────────────────────────────────────────────────────── */
+#eb_browser_modal .modal-body {
+  padding: 0;
+}
+#eb_browser_modal .ctw-eb-window {
+  border: none;
+}
+
+/* ── Coding panel ──────────────────────────────────────────────────── */
+.coding-panel .card {
+  border: 1px solid #dee2e6;
+  border-radius: 0.5rem;
+}
+.coding-panel .card-header {
+  background: #f0f4f8;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+}
+
+/* ── Alerts ─────────────────────────────────────────────────────────── */
+.alert {
+  border-radius: 0.4rem;
+  font-size: 0.88rem;
+}
+
+/* ── Badges ─────────────────────────────────────────────────────────── */
+.badge {
+  font-weight: 500;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────── */
+.spinner-border-sm {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* ── Registry table ────────────────────────────────────────────────── */
+.table {
+  font-size: 0.88rem;
+}
+.table th {
+  font-weight: 600;
+  background: #f8f9fa;
+  border-bottom: 2px solid #dee2e6;
+}
+.table td {
+  vertical-align: middle;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  #eb_browser_modal .modal-dialog {
+    max-width: 100vw !important;
+    width: 100vw !important;
+    margin: 0;
+  }
+}
+@media (max-width: 992px) {
+  .coding-col, .crh-col {
+    height: auto;
+  }
+}
+
+/* ── Shiny busy indicator ──────────────────────────────────────────── */
+.shiny-busy-indicator-bar {
+  height: 4px !important;
+  background: linear-gradient(90deg, #18bc9c, #3498db, #18bc9c) !important;
+  background-size: 200% 100% !important;
+  animation: busySlide 1.4s linear infinite !important;
+}
+@keyframes busySlide {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* Shiny notifications */
+.shiny-notification {
+  min-width: 280px;
+  font-size: 0.92rem;
+  border-left: 4px solid #2c3e50;
+  border-radius: 0.5rem;
+}
+.shiny-notification-message {
+  border-left-color: #18bc9c;
+}
+
+/* ── Scrollbar refinement ──────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
