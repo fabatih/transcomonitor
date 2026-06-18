@@ -1,0 +1,77 @@
+[project]
+name = "transcomonitor"
+version = "0.1.0-mvp"
+description = "Plateforme ATIH de maintenance du transcodage CIM-10 FR/PMSI ↔ CIM-11"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Fabrice Danjou", email = "fabatih@users.noreply.github.com" }
+]
+license = { text = "MIT" }
+keywords = ["icd-10", "icd-11", "cim-10", "cim-11", "pmsi", "atih", "transcoding", "mapping"]
+
+dependencies = [
+    # Core
+    "shiny>=1.5.0",
+    "shinywidgets>=0.3.0",
+    "SQLAlchemy>=2.0",
+
+    # DataFrames & IO
+    "polars>=1.0",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "pyarrow>=15",
+
+    # Persistence
+    "boto3>=1.34",
+
+    # Security
+    "bcrypt>=4.1",
+    "cryptography>=42",
+
+    # API WHO
+    "requests>=2.31",
+    "aiohttp>=3.9",
+
+    # Config & utils
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+]
+v1 = [
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+]
+v2 = [
+    "mistralai>=1.0",
+    "rdflib>=7.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["db*", "modules*", "services*", "utils*"]
+exclude = ["tests*", "scripts*", "data*", "www*", "config*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # line length géré par formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

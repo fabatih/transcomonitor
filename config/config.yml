@@ -1,0 +1,69 @@
+# transcomonitor — Configuration applicative
+# Les valeurs sensibles (clés API, mots de passe) sont en variables d'environnement.
+# Les paramètres modifiables par l'admin sont persistés en DB (table app_config)
+# et viennent surcharger ces valeurs au runtime via _restore_config_from_db().
+
+app:
+  name: "Plateforme ATIH de maintenance du transcodage CIM"
+  short_name: "transcomonitor"
+  version: "0.1.0-mvp"
+  default_admin_user: "admin"
+  db_path: "transcomonitor.sqlite"
+  language: "fr"
+  # Politique d'audit RGPD (toggle dynamique en DB possible)
+  audit_capture_request_meta: false
+
+# Source CIM-10 (uniquement FR/PMSI confirmé §14)
+cim10:
+  source: "FR_PMSI"
+  version_current: "2026"  # année de référence ATIH courante
+
+# Releases CIM-11 supportées (la "courante" sert de défaut pour l'EB browser)
+cim11:
+  release_current: "2026-01"
+  releases_supported:
+    - "2026-01"
+    - "2025-01"
+    - "2024-01"
+  foundation_cache_ttl_hours: 24
+  linearization_cache_ttl_hours: 24
+
+# API ICD-11
+icd_api:
+  who_base_url: "https://id.who.int"
+  who_token_url: "https://icdaccessmanagement.who.int/connect/token"
+  local_url: "http://localhost:8382"  # API locale optionnelle (dev)
+  fallback_to_who: true
+  rate_limit_qps: 5
+
+# Embedded Browser (ECT/EB) — pattern repris d'icd11pycode
+ect:
+  mode: "prod"        # prod = proxy server-side OAuth2, dev = direct WHO test
+  language: "fr"
+  dev_url: "https://icd11restapi-developer-test.azurewebsites.net"
+
+# AWS S3 (snapshots SQLite + library)
+s3:
+  bucket: "transcomonitor"
+  region: "eu-west-3"
+  endpoint_url: ""  # vide = AWS default
+  db_key: "db/transcomonitor.sqlite"
+  upload_min_interval_seconds: 10  # debounce des uploads async
+  library_prefix: "library/"
+  snapshots_prefix: "snapshots/"   # versions gelées (frozen_versions)
+  cache_prefix: "cache/"            # cim11_foundation / cim11_linearizations
+
+# Workflow imports massifs
+import:
+  default_precedence_policy: "auto_unless_valid"  # cf. §14 #6
+  allowed_policies:
+    - "auto_unless_valid"
+    - "never_override_valid"
+    - "always_override"
+    - "manual_per_row"
+
+# Mistral (V2 — désactivé en MVP)
+mistral:
+  enabled: false
+  base_url: "https://api.mistral.ai"
+  model_default: "mistral-large-latest"

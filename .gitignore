@@ -1,0 +1,87 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+.aws/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual env
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+.nox/
+coverage.xml
+*.cover
+
+# Database (local dev only — production DB is in /tmp on shinyapps.io)
+transcomonitor.sqlite
+transcomonitor.sqlite-journal
+transcomonitor.sqlite-wal
+transcomonitor.sqlite-shm
+*.sqlite-tmp
+*.s3tmp
+
+# Logs
+*.log
+logs/
+
+# rsconnect
+rsconnect-python/
+.rscignore.local
+
+# Shiny dev
+shinyapps_deploy.log
+
+# Caches & temp
+*.tmp
+tmp/
+/tmp/transcomonitor*
+
+# CIM-11 reference caches (large — restored from S3 in prod)
+data/cache/
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Ne pas ignorer le seed (versionné dans Git, embarqué dans l'app)
+!data/seed/
+!data/seed/*.xlsx

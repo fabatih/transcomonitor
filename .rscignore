@@ -1,0 +1,47 @@
+# Files ignored by rsconnect-python deployment to shinyapps.io
+# (paths relative to the directory being deployed)
+
+# Development
+.env
+.env.local
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Git & VCS
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Tests
+tests/
+.pytest_cache/
+
+# Bootstrap scripts (run offline, not at runtime)
+scripts/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Local DB & caches
+transcomonitor.sqlite*
+*.sqlite-tmp
+data/cache/
+
+# AWS local config
+.aws/
+
+# Logs
+*.log
+logs/

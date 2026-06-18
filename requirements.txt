@@ -1,0 +1,29 @@
+# requirements.txt — figées pour le déploiement shinyapps.io
+# Synchronisé avec pyproject.toml [project].dependencies
+# rsconnect-python lit ce fichier pour l'environnement de déploiement.
+
+# Core
+shiny>=1.5.0
+shinywidgets>=0.3.0
+SQLAlchemy>=2.0
+
+# DataFrames & IO
+polars>=1.0
+pandas>=2.2
+openpyxl>=3.1
+pyarrow>=15
+
+# Persistence
+boto3>=1.34
+
+# Security
+bcrypt>=4.1
+cryptography>=42
+
+# API WHO
+requests>=2.31
+aiohttp>=3.9
+
+# Config & utils
+PyYAML>=6.0
+python-dotenv>=1.0
