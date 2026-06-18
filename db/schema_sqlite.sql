@@ -240,7 +240,8 @@ CREATE TABLE IF NOT EXISTS mappings (
                                 'cim10_code',      -- direction=reverse : code CIM-10 cible
                                 'non_mappable'     -- pas de cible
                              )),
-    target_mms_code          TEXT,                                  -- 'BA00' ou 'BA00&XN8P1' ou '1G40/1B5Z'
+    target_mms_code          TEXT,                                  -- forward : 'BA00' ou 'BA00&XN8P1' ; reverse : NULL
+    target_cim10_code        TEXT,                                  -- reverse uniquement : code CIM-10 cible
     target_foundation_uris   TEXT,                                  -- JSON array de foundation URIs
     target_components        TEXT,                                  -- JSON array (détail cluster)
     target_release_id        INTEGER REFERENCES nomenclature_versions (id),
@@ -292,6 +293,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_mappings_active
 CREATE INDEX IF NOT EXISTS idx_mappings_direction_source ON mappings (direction, source_code);
 CREATE INDEX IF NOT EXISTS idx_mappings_direction_status ON mappings (direction, status);
 CREATE INDEX IF NOT EXISTS idx_mappings_target_mms      ON mappings (target_mms_code) WHERE target_mms_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mappings_target_cim10    ON mappings (target_cim10_code) WHERE target_cim10_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_mappings_status_pending  ON mappings (status) WHERE status IN ('propose', 'en_revue', 'conteste');
 CREATE INDEX IF NOT EXISTS idx_mappings_validator       ON mappings (last_validated_by) WHERE last_validated_by IS NOT NULL;
 
@@ -307,6 +309,7 @@ CREATE TABLE IF NOT EXISTS mapping_proposals (
     -- Snapshot de l'ancienne valeur (avant modification)
     target_kind_old          TEXT,
     target_mms_code_old      TEXT,
+    target_cim10_code_old    TEXT,
     target_foundation_uris_old TEXT,    -- JSON
     target_components_old    TEXT,      -- JSON
     relation_type_old        TEXT,
@@ -443,6 +446,7 @@ CREATE TABLE IF NOT EXISTS version_mappings_snapshot (
     source_code              TEXT    NOT NULL,
     target_kind              TEXT,
     target_mms_code          TEXT,
+    target_cim10_code        TEXT,
     target_foundation_uris   TEXT,                          -- JSON
     target_components        TEXT,                          -- JSON
     relation_type            TEXT,
