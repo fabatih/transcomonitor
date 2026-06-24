@@ -350,6 +350,9 @@ CREATE TABLE IF NOT EXISTS justifications (
     commentaire  TEXT,                                              -- texte libre
     references_  TEXT,                                              -- JSON : [{type, value, url}, ...]
                                                                     -- 'references' est mot-clé SQL → suffixe _
+    problematique TEXT,                                             -- §16.7 : code problematique_types
+                                                                    -- (FK applicative, pas SQL — la table problematique_types
+                                                                    -- est définie plus bas, on évite l'ordre de création)
     attached_to_action TEXT CHECK (attached_to_action IS NULL OR attached_to_action IN (
                     'create', 'edit', 'validate', 'contest', 'reject', 'freeze', 'import_decision'
                  )),
@@ -612,6 +615,41 @@ CREATE TABLE IF NOT EXISTS rule_applications (
 
 CREATE INDEX IF NOT EXISTS idx_rule_apps_mapping ON rule_applications (mapping_id);
 CREATE INDEX IF NOT EXISTS idx_rule_apps_rule    ON rule_applications (rule_id, applied_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 16. Problématiques de transcodage (typologie paramétrable)
+--     Per plan §16.7 : liste de valeurs annotables par les utilisateurs lors
+--     de la justification d'un mapping, gérée par l'administrateur.
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS problematique_types (
+    code        TEXT    NOT NULL PRIMARY KEY,
+    libelle     TEXT    NOT NULL,
+    description TEXT,
+    color       TEXT    DEFAULT 'secondary',                     -- Bootstrap badge color
+    active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    sort_order  INTEGER DEFAULT 0,
+    created_by  INTEGER REFERENCES users(id),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Pre-seed with reasonable defaults — admins can edit/disable/add via the UI
+INSERT OR IGNORE INTO problematique_types (code, libelle, description, color, sort_order) VALUES
+    ('aucune',                       'Aucune',
+     'Pas de problématique identifiée à signaler.',                              'success', 10),
+    ('ambiguite_oms',                'Ambiguïté OMS',
+     'Le mapping OMS source est ambigu (plusieurs candidats équivalents).',      'warning', 20),
+    ('decision_fr_manquante',        'Décision FR manquante',
+     'Le mapping nécessite une décision nationale (ATIH/ANS) non encore prise.', 'danger',  30),
+    ('postcoord_incomplete',         'Post-coordination incomplète',
+     'Le cluster MMS est incomplet — axes/specifiers manquants.',                'warning', 40),
+    ('divergence_classant_pmsi',     'Divergence classant PMSI',
+     'Le mapping change le statut classant du code (impact groupage GHM).',      'danger',  50),
+    ('necessite_demande_oms',        'Nécessite une demande OMS',
+     'Le concept n''existe pas en CIM-11 — demande de création OMS requise.',    'info',    60),
+    ('autre',                        'Autre',
+     'Autre problématique — préciser dans le commentaire.',                      'secondary', 70);
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- 15. App config (key-value — paramètres et secrets chiffrés)

@@ -36,6 +36,9 @@ dependencies = [
     # Config & utils
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
+
+    # Documentation rendering (in-app Markdown viewer)
+    "markdown>=3.5",
 ]
 
 [project.optional-dependencies]

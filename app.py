@@ -131,6 +131,7 @@ from modules.mod_mapping_edit import mapping_edit_ui, mapping_edit_server
 from modules.mod_worklist import worklist_ui, worklist_server
 from modules.mod_export import export_ui, export_server
 from modules.mod_admin import admin_ui, admin_server
+from modules.mod_documentation import documentation_ui, documentation_server
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -237,6 +238,7 @@ def server(input, output, session):
     worklist_server("worklist", current_user=current_user)
     export_server("exports", current_user=current_user)
     admin_server("admin", current_user=current_user)
+    documentation_server("docs", current_user=current_user)
 
     @output
     @render.ui
@@ -272,6 +274,10 @@ def server(input, output, session):
             ui.nav_panel(
                 ui.HTML('<i class="bi bi-download"></i> Exports'),
                 ui.div(export_ui("exports"), class_="p-3"),
+            ),
+            ui.nav_panel(
+                ui.HTML('<i class="bi bi-book"></i> Documentation'),
+                ui.div(documentation_ui("docs"), class_="p-3"),
             ),
         ]
         if is_admin(user):

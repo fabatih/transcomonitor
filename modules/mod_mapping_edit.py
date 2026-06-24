@@ -122,6 +122,7 @@ def edit_mapping(
     justification_motif: str,
     justification_commentaire: str,
     justification_references: Optional[list[dict]] = None,
+    justification_problematique: Optional[str] = None,
     auto_resolve_foundation_from_mms: bool = True,
     target_release: Optional[str] = None,
 ) -> dict:
@@ -290,12 +291,14 @@ def edit_mapping(
     # Insert justification
     con.execute(
         """INSERT INTO justifications
-               (mapping_id, motif, commentaire, references_, attached_to_action, created_by)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+               (mapping_id, motif, commentaire, references_, attached_to_action, created_by,
+                problematique)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (mapping_id, justification_motif, justification_commentaire,
          json.dumps(justification_references, ensure_ascii=False) if justification_references else None,
          "validate" if final_status == "valide" else "edit",
-         user["id"]),
+         user["id"],
+         justification_problematique),
     )
 
     # Resync mapping_foundation_links
@@ -424,6 +427,17 @@ def mapping_edit_server(
 
         is_reverse = m["direction"] == "reverse"
         kind_choices = TARGET_KINDS_REVERSE if is_reverse else TARGET_KINDS_FORWARD
+
+        # Load active problematique types for the selector (plan §16.7)
+        from services.problematiques import list_problematiques
+        con = get_connection()
+        try:
+            problematiques = list_problematiques(con, only_active=True)
+        finally:
+            con.close()
+        problematique_choices = {p["code"]: p["libelle"] for p in problematiques}
+        if not problematique_choices:
+            problematique_choices = {"aucune": "Aucune"}
 
         # Current foundation URIs (display)
         try:
@@ -564,6 +578,13 @@ def mapping_edit_server(
                         "edit_motif", "Motif",
                         choices=JUSTIFICATION_MOTIFS,
                         selected="arbitrage_expert",
+                        width="100%",
+                    ),
+                    # Problematique typology selector (plan §16.7)
+                    ui.input_select(
+                        "edit_problematique", "Problématique éventuelle",
+                        choices=problematique_choices,
+                        selected="aucune",
                         width="100%",
                     ),
                     ui.input_text_area(
@@ -729,6 +750,7 @@ def mapping_edit_server(
                     justification_motif=input.edit_motif(),
                     justification_commentaire=input.edit_commentaire() or "",
                     justification_references=refs,
+                    justification_problematique=(input.edit_problematique() or "aucune"),
                     target_release=input.edit_release() or None,
                 )
             finally:

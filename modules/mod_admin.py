@@ -293,6 +293,10 @@ def admin_server(input, output, session, current_user: reactive.Value):
             lists = [dict(r) for r in con.execute(
                 "SELECT * FROM assignment_lists ORDER BY created_at DESC"
             ).fetchall()]
+            users = models.list_users(con, include_inactive=False)
+            # Existing assignments overview
+            from modules.mod_worklist import fetch_all_assignments
+            assignments = fetch_all_assignments(con)
         finally:
             con.close()
         list_rows = []
@@ -301,39 +305,146 @@ def admin_server(input, output, session, current_user: reactive.Value):
                 ui.tags.td(str(lst["id"])),
                 ui.tags.td(lst["name"]),
                 ui.tags.td(lst.get("direction") or ""),
-                ui.tags.td(lst.get("description") or ""),
+                ui.tags.td((lst.get("description") or "")[:60]),
+                ui.tags.td("statique" if lst.get("static_codes") else "dynamique"),
                 ui.tags.td(lst["created_at"]),
             ))
+        assign_rows = []
+        for a in assignments[:30]:
+            assign_rows.append(ui.tags.tr(
+                ui.tags.td(str(a["list_id"])),
+                ui.tags.td(a["list_name"]),
+                ui.tags.td(a["username"]),
+                ui.tags.td(a["expected_role"]),
+                ui.tags.td(a["status"]),
+                ui.tags.td(a["due_date"] or "—"),
+                ui.tags.td(a["assigned_at"]),
+            ))
+
+        list_choices = {str(lst["id"]): f"#{lst['id']} — {lst['name']}" for lst in lists}
+        user_choices = {str(usr["id"]): usr["username"] for usr in users}
+        if not list_choices:
+            list_choices = {"": "(aucune liste)"}
+        if not user_choices:
+            user_choices = {"": "(aucun user)"}
+
         return ui.div(
+            # — Existing lists table
             ui.h6("Listes d'affectation existantes"),
             ui.tags.table(
                 ui.tags.thead(ui.tags.tr(
                     ui.tags.th("id"), ui.tags.th("Nom"),
                     ui.tags.th("Direction"), ui.tags.th("Description"),
-                    ui.tags.th("Créée le"),
+                    ui.tags.th("Type"), ui.tags.th("Créée le"),
                 )),
                 ui.tags.tbody(*list_rows),
                 class_="table table-sm table-striped",
             ),
+
+            # — Create static list (existing form, kept)
             ui.hr(),
             ui.h6("Créer une liste (statique — codes explicites)"),
             ui.layout_columns(
-                ui.input_text("new_list_name", "Nom"),
+                ui.input_text("new_list_name", "Nom", width="100%"),
                 ui.input_select("new_list_direction", "Direction",
                                  choices={"forward": "Forward", "reverse": "Reverse",
                                           "both": "Les deux"},
-                                 selected="forward"),
+                                 selected="forward", width="100%"),
                 ui.input_text_area("new_list_codes",
                                     "Codes (un par ligne ou séparés par virgule)",
-                                    rows=3),
+                                    rows=3, width="100%"),
                 col_widths=(4, 4, 4),
             ),
-            ui.input_text("new_list_description", "Description"),
+            ui.input_text("new_list_description", "Description", width="100%"),
             ui.div(
-                ui.input_action_button("create_list_btn", "Créer liste",
+                ui.input_action_button("create_list_btn", "Créer liste statique",
                                         class_="btn btn-primary"),
-                ui.output_ui("list_action_msg"),
                 class_="mt-2",
+            ),
+
+            # — Create dynamic list from filters (plan §16.5)
+            ui.hr(),
+            ui.h6("Créer une liste dynamique (filtres)"),
+            ui.layout_columns(
+                ui.input_text("dyn_list_name", "Nom", width="100%"),
+                ui.input_select("dyn_list_direction", "Direction",
+                                 choices={"forward": "Forward", "reverse": "Reverse"},
+                                 selected="forward", width="100%"),
+                ui.input_text("dyn_list_chapitre", "Chapitre (ex: 01)",
+                                placeholder="laisser vide pour tous", width="100%"),
+                col_widths=(4, 4, 4),
+            ),
+            ui.layout_columns(
+                ui.input_checkbox_group("dyn_list_fiabilite", "Fiabilité",
+                                         choices=["TRES_HAUTE", "HAUTE", "MOYENNE",
+                                                  "BASSE", "CONTESTEE", "NON_RESOLU"]),
+                ui.input_checkbox_group("dyn_list_status", "Statut",
+                                         choices=["propose", "en_revue", "conteste"]),
+                col_widths=(6, 6),
+            ),
+            ui.input_checkbox("dyn_list_classant", "Forward source classant (PMSI)"),
+            ui.div(
+                ui.input_action_button("preview_dyn_btn", "Aperçu (count)",
+                                        class_="btn btn-outline-info me-2"),
+                ui.input_action_button("create_dyn_btn", "Créer liste dynamique",
+                                        class_="btn btn-primary"),
+                class_="mt-2",
+            ),
+            ui.output_ui("preview_dyn_result"),
+
+            # — Edit existing list (plan §16.5)
+            ui.hr(),
+            ui.h6("Éditer une liste existante"),
+            ui.layout_columns(
+                ui.input_select("edit_list_id", "Liste à éditer",
+                                 choices=list_choices, width="100%"),
+                ui.input_text("edit_list_name", "Nouveau nom (vide = inchangé)",
+                                width="100%"),
+                ui.input_text("edit_list_description", "Nouvelle description (vide = inchangée)",
+                                width="100%"),
+                col_widths=(4, 4, 4),
+            ),
+            ui.div(
+                ui.input_action_button("update_list_btn", "Mettre à jour la liste",
+                                        class_="btn btn-primary"),
+                class_="mt-2",
+            ),
+
+            # — Assign user to list (plan §16.5)
+            ui.hr(),
+            ui.h6("Affecter un utilisateur à une liste"),
+            ui.layout_columns(
+                ui.input_select("assign_list_id", "Liste", choices=list_choices, width="100%"),
+                ui.input_select("assign_user_id", "Utilisateur", choices=user_choices, width="100%"),
+                ui.input_select("assign_role", "Rôle attendu",
+                                 choices={"mainteneur": "Mainteneur",
+                                          "valideur":   "Valideur"},
+                                 selected="mainteneur", width="100%"),
+                ui.input_date("assign_due", "Échéance (optionnel)", width="100%"),
+                col_widths=(3, 3, 3, 3),
+            ),
+            ui.div(
+                ui.input_action_button("assign_btn", "Affecter",
+                                        class_="btn btn-success"),
+                class_="mt-2",
+            ),
+
+            # — Existing assignments overview
+            ui.hr(),
+            ui.h6("Affectations en cours (30 dernières)"),
+            ui.tags.table(
+                ui.tags.thead(ui.tags.tr(
+                    ui.tags.th("Liste id"), ui.tags.th("Nom liste"),
+                    ui.tags.th("Utilisateur"), ui.tags.th("Rôle"),
+                    ui.tags.th("Statut"), ui.tags.th("Échéance"),
+                    ui.tags.th("Affectée le"),
+                )),
+                ui.tags.tbody(*assign_rows) if assign_rows else
+                    ui.tags.tbody(ui.tags.tr(ui.tags.td(
+                        "Aucune affectation pour l'instant.",
+                        colspan="7", class_="text-muted small text-center",
+                    ))),
+                class_="table table-sm table-striped",
             ),
         )
 
@@ -384,6 +495,142 @@ def admin_server(input, output, session, current_user: reactive.Value):
         finally:
             con.close()
 
+    # ── Dynamic list (filters-based) ──────────────────────────────────────
+
+    def _build_dyn_query_def() -> dict:
+        """Read the dyn_list_* inputs into a query_definition dict."""
+        return {
+            "direction":   input.dyn_list_direction(),
+            "chapitre":    (input.dyn_list_chapitre() or "").strip() or None,
+            "fiabilite":   list(input.dyn_list_fiabilite() or []),
+            "status":      list(input.dyn_list_status() or []),
+            "est_classant": bool(input.dyn_list_classant())
+                            if input.dyn_list_direction() == "forward" else False,
+        }
+
+    preview_dyn_result_state = reactive.value("")
+
+    @output
+    @render.ui
+    def preview_dyn_result():
+        v = preview_dyn_result_state()
+        if not v:
+            return ui.div()
+        return ui.div(v, class_="alert alert-info py-1 small mt-2")
+
+    @reactive.effect
+    @reactive.event(input.preview_dyn_btn)
+    def _preview_dyn():
+        u = _require_admin()
+        if u is None:
+            return
+        from modules.mod_worklist import preview_filter_count
+        try:
+            qdef = _build_dyn_query_def()
+            con = get_connection()
+            try:
+                n = preview_filter_count(con, qdef)
+            finally:
+                con.close()
+            preview_dyn_result_state.set(
+                f"Aperçu : {n} mappings correspondants au filtre."
+            )
+        except Exception as e:
+            _toast(f"✗ Erreur preview : {e}")
+
+    @reactive.effect
+    @reactive.event(input.create_dyn_btn)
+    def _create_dyn():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        from modules.mod_worklist import create_assignment_list
+        name = (input.dyn_list_name() or "").strip()
+        if not name:
+            _toast("✗ Nom requis")
+            return
+        qdef = _build_dyn_query_def()
+        con = get_connection()
+        try:
+            lid = create_assignment_list(
+                con, user=u, name=name,
+                description=f"Liste dynamique : {qdef}",
+                direction=qdef["direction"],
+                query_definition=qdef,
+            )
+            _toast(f"✓ Liste dynamique #{lid} créée")
+            _refresh()
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
+
+    # ── Update existing list (plan §16.5) ────────────────────────────────
+
+    @reactive.effect
+    @reactive.event(input.update_list_btn)
+    def _update_list():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        try:
+            lid = int(input.edit_list_id())
+        except (TypeError, ValueError):
+            _toast("✗ Liste non sélectionnée")
+            return
+        from modules.mod_worklist import update_assignment_list
+        new_name = (input.edit_list_name() or "").strip() or None
+        new_desc = (input.edit_list_description() or "").strip() or None
+        if not new_name and not new_desc:
+            _toast("✗ Rien à mettre à jour (renseignez nom ou description)")
+            return
+        con = get_connection()
+        try:
+            update_assignment_list(con, user=u, list_id=lid,
+                                     name=new_name, description=new_desc)
+            _toast(f"✓ Liste #{lid} mise à jour")
+            _refresh()
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
+
+    # ── Assign user to list (plan §16.5) ─────────────────────────────────
+
+    @reactive.effect
+    @reactive.event(input.assign_btn)
+    def _do_assign():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        try:
+            lid = int(input.assign_list_id())
+            uid = int(input.assign_user_id())
+        except (TypeError, ValueError):
+            _toast("✗ Liste ou utilisateur non sélectionné")
+            return
+        role = input.assign_role()
+        due  = input.assign_due()
+        due_str = due.isoformat() if due else None
+        from modules.mod_worklist import assign_user_to_list
+        con = get_connection()
+        try:
+            aid = assign_user_to_list(con, user=u, list_id=lid,
+                                        target_user_id=uid,
+                                        expected_role=role,
+                                        due_date=due_str)
+            _toast(f"✓ Affectation #{aid} créée")
+            _refresh()
+        except sqlite3.IntegrityError:
+            _toast("✗ Cette affectation existe déjà (liste + user + rôle)")
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
+
     # ── Config tab ───────────────────────────────────────────────────────
 
     @output
@@ -398,6 +645,9 @@ def admin_server(input, output, session, current_user: reactive.Value):
             rows = [dict(r) for r in con.execute(
                 "SELECT key, value, is_secret, updated_at FROM app_config ORDER BY key"
             ).fetchall()]
+            # Problematique types (plan §16.7)
+            from services.problematiques import list_problematiques
+            problems = list_problematiques(con, only_active=False)
         finally:
             con.close()
 
@@ -409,8 +659,49 @@ def admin_server(input, output, session, current_user: reactive.Value):
                 ui.tags.td(display_val),
                 ui.tags.td(r["updated_at"] or ""),
             ))
+        problem_rows = []
+        for p in problems:
+            badge_color = p["color"] or "secondary"
+            status_badge = "success" if p["active"] else "danger"
+            problem_rows.append(ui.tags.tr(
+                ui.tags.td(ui.tags.code(p["code"])),
+                ui.tags.td(ui.HTML(f'<span class="badge bg-{badge_color}">{p["libelle"]}</span>')),
+                ui.tags.td((p.get("description") or "")[:60]),
+                ui.tags.td(p["color"]),
+                ui.tags.td(str(p.get("sort_order") or "")),
+                ui.tags.td(ui.HTML(f'<span class="badge bg-{status_badge}">{"actif" if p["active"] else "désactivé"}</span>')),
+            ))
+        problem_codes = {p["code"]: f"{p['code']} — {p['libelle']}" for p in problems}
+        if not problem_codes:
+            problem_codes = {"": "(aucune)"}
+
+        # Help block explaining the Paramètres tab (plan §16.4 hint, §16.6)
+        help_block = ui.div(
+            ui.tags.p(
+                ui.tags.strong("Comment ajouter ou modifier un paramètre ?"),
+                class_="mb-1",
+            ),
+            ui.tags.ol(
+                ui.tags.li("Saisir une clé existante OU une nouvelle clé dans le champ « Clé »."),
+                ui.tags.li("Saisir la valeur souhaitée dans « Valeur » (texte libre)."),
+                ui.tags.li("Cliquer sur « Enregistrer ». Un toast confirme la sauvegarde."),
+                ui.tags.li("Pour les secrets (clés API), utiliser plutôt l'onglet « 🔑 Secrets API »."),
+                class_="small mb-2",
+            ),
+            ui.tags.p(
+                "Clés notables : ",
+                ui.tags.code("audit_capture_request_meta"),
+                " (0/1 pour enregistrer IP+UA), ",
+                ui.tags.code("default_precedence_policy"),
+                " (auto_unless_valid | never_override_valid | always_override | manual_per_row).",
+                class_="small text-muted mb-0",
+            ),
+            class_="alert alert-light py-2",
+        )
+
         return ui.div(
-            ui.h6("Paramètres applicatifs"),
+            ui.h6("Paramètres applicatifs (clé / valeur)"),
+            help_block,
             ui.tags.table(
                 ui.tags.thead(ui.tags.tr(
                     ui.tags.th("Clé"), ui.tags.th("Valeur"),
@@ -422,13 +713,55 @@ def admin_server(input, output, session, current_user: reactive.Value):
             ui.hr(),
             ui.h6("Modifier / ajouter un paramètre"),
             ui.layout_columns(
-                ui.input_text("config_key", "Clé"),
-                ui.input_text("config_value", "Valeur"),
+                ui.input_text("config_key", "Clé", width="100%"),
+                ui.input_text("config_value", "Valeur", width="100%"),
                 col_widths=(4, 8),
             ),
             ui.input_action_button("config_save_btn", "Enregistrer",
                                     class_="btn btn-primary"),
-            ui.output_ui("config_action_msg"),
+
+            # — Problematique types (plan §16.7)
+            ui.hr(),
+            ui.h6("Typologie des problématiques de transcodage"),
+            ui.div(
+                "Cette liste alimente le sélecteur « Problématique éventuelle » dans "
+                "l'onglet Édition (section Justification).",
+                class_="small text-muted mb-2",
+            ),
+            ui.tags.table(
+                ui.tags.thead(ui.tags.tr(
+                    ui.tags.th("Code"), ui.tags.th("Libellé (badge)"),
+                    ui.tags.th("Description"), ui.tags.th("Couleur"),
+                    ui.tags.th("Ordre"), ui.tags.th("Statut"),
+                )),
+                ui.tags.tbody(*problem_rows),
+                class_="table table-sm table-striped",
+            ),
+            ui.layout_columns(
+                ui.input_text("problem_code", "Code (unique, sans espaces)",
+                                placeholder="ex: lignes_perdues", width="100%"),
+                ui.input_text("problem_libelle", "Libellé", width="100%"),
+                ui.input_select("problem_color", "Couleur badge",
+                                 choices=["primary", "secondary", "success",
+                                          "danger", "warning", "info",
+                                          "light", "dark"],
+                                 selected="secondary", width="100%"),
+                ui.input_numeric("problem_sort", "Ordre", value=100,
+                                  min=0, step=10, width="100%"),
+                col_widths=(3, 3, 3, 3),
+            ),
+            ui.input_text("problem_description", "Description", width="100%"),
+            ui.div(
+                ui.input_action_button("problem_create_btn", "Créer",
+                                        class_="btn btn-success me-2"),
+                ui.input_select("problem_existing", "Code existant à éditer/désactiver",
+                                 choices=problem_codes, selected="", width="200px"),
+                ui.input_action_button("problem_update_btn", "Mettre à jour (libellé+couleur+ordre)",
+                                        class_="btn btn-primary me-2"),
+                ui.input_action_button("problem_toggle_btn", "Activer/Désactiver",
+                                        class_="btn btn-warning"),
+                class_="d-flex gap-2 align-items-end mt-2 flex-wrap",
+            ),
         )
 
     config_action_message = reactive.value("")
@@ -475,6 +808,98 @@ def admin_server(input, output, session, current_user: reactive.Value):
 
             config_action_message.set(f"✗ Erreur : {e}")
         finally:
+            con.close()
+
+    # ── Problematique types handlers (plan §16.7) ────────────────────────
+
+    @reactive.effect
+    @reactive.event(input.problem_create_btn)
+    def _problem_create():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        from services.problematiques import create_problematique
+        code = (input.problem_code() or "").strip().lower()
+        lib  = (input.problem_libelle() or "").strip()
+        if not code or not lib:
+            _toast("✗ Code et libellé requis")
+            return
+        con = get_connection()
+        try:
+            create_problematique(
+                con, user=u, code=code, libelle=lib,
+                description=input.problem_description() or "",
+                color=input.problem_color(),
+                sort_order=int(input.problem_sort() or 100),
+            )
+            _toast(f"✓ Problématique '{code}' créée")
+            _refresh()
+        except sqlite3.IntegrityError:
+            _toast(f"✗ Le code '{code}' existe déjà")
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
+
+    @reactive.effect
+    @reactive.event(input.problem_update_btn)
+    def _problem_update():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        from services.problematiques import update_problematique
+        code = (input.problem_existing() or "").strip()
+        if not code:
+            _toast("✗ Sélectionner un code existant")
+            return
+        lib = (input.problem_libelle() or "").strip() or None
+        desc = input.problem_description() or None
+        con = get_connection()
+        try:
+            update_problematique(
+                con, user=u, code=code,
+                libelle=lib, description=desc,
+                color=input.problem_color(),
+                sort_order=int(input.problem_sort() or 100),
+            )
+            _toast(f"✓ Problématique '{code}' mise à jour")
+            _refresh()
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
+
+    @reactive.effect
+    @reactive.event(input.problem_toggle_btn)
+    def _problem_toggle():
+        u = _require_admin()
+        if u is None:
+            _toast("✗ Accès refusé")
+            return
+        from services.problematiques import (
+            deactivate_problematique, get_problematique,
+        )
+        code = (input.problem_existing() or "").strip()
+        if not code:
+            _toast("✗ Sélectionner un code existant")
+            return
+        con = get_connection()
+        try:
+            p = get_problematique(con, code)
+            if p is None:
+                _toast(f"✗ Code '{code}' introuvable")
+                return
+            new_active = not bool(p["active"])
+            deactivate_problematique(con, user=u, code=code, active=new_active)
+            _toast(f"✓ Problématique '{code}' "
+                   f"{'activée' if new_active else 'désactivée'}")
+            _refresh()
+        except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+        finally:
+            con.close()
             con.close()
 
     # ── Secrets tab ──────────────────────────────────────────────────────

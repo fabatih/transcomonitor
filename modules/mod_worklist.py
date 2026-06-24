@@ -218,6 +218,86 @@ def assign_user_to_list(
     return cur.lastrowid
 
 
+def update_assignment_list(
+    con: sqlite3.Connection, *,
+    user: dict, list_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    direction: Optional[str] = None,
+    query_definition: Optional[dict] = None,
+    static_codes: Optional[list[str]] = None,
+) -> None:
+    """Update an existing assignment list (plan §16.5)."""
+    authz.require_capability(user, "edit_assignment_list")
+    sets, params = [], []
+    if name is not None:
+        sets.append("name = ?"); params.append(name)
+    if description is not None:
+        sets.append("description = ?"); params.append(description)
+    if direction is not None:
+        if direction not in ("forward", "reverse", "both"):
+            raise ValueError(f"invalid direction: {direction!r}")
+        sets.append("direction = ?"); params.append(direction)
+    if query_definition is not None:
+        sets.append("query_definition = ?")
+        params.append(json.dumps(query_definition, ensure_ascii=False))
+    if static_codes is not None:
+        sets.append("static_codes = ?")
+        params.append(json.dumps(static_codes, ensure_ascii=False))
+    if not sets:
+        return
+    sets.append("updated_at = datetime('now')")
+    params.append(list_id)
+    con.execute(f"UPDATE assignment_lists SET {', '.join(sets)} WHERE id = ?", params)
+    con.commit()
+    from services.audit import audit_user_action
+    audit_user_action(con, user=user, action="admin_list_update",
+                      object_type="assignment_list", object_id=list_id,
+                      new_value={k: v for k, v in [
+                          ("name", name), ("description", description),
+                          ("direction", direction),
+                          ("query_definition", query_definition),
+                          ("static_codes_count", len(static_codes) if static_codes else None),
+                      ] if v is not None})
+
+
+def list_codes_in_assignment(con: sqlite3.Connection, list_id: int) -> list[str]:
+    """Resolve the codes covered by an assignment list (static or dynamic).
+
+    For dynamic lists, runs the query and returns just the source_code list.
+    Capped at 50 000 to avoid blowing up the UI on broad filters.
+    """
+    lst = con.execute(
+        "SELECT * FROM assignment_lists WHERE id = ?", (list_id,)
+    ).fetchone()
+    if lst is None:
+        raise KeyError(f"list not found : {list_id}")
+    lst = dict(lst)
+    if lst["static_codes"]:
+        return json.loads(lst["static_codes"])
+    query_def = json.loads(lst["query_definition"]) if lst["query_definition"] else {}
+    where_sql, params = _filter_to_sql(query_def)
+    sql = f"""
+        SELECT DISTINCT m.source_code FROM mappings m
+        LEFT JOIN cim10_codes c ON c.code = m.source_code
+        WHERE {where_sql}
+        LIMIT 50000
+    """
+    return [r[0] for r in con.execute(sql, params).fetchall()]
+
+
+def preview_filter_count(con: sqlite3.Connection, query_def: dict) -> int:
+    """Preview the count of mappings matching a query_definition (for the
+    'Create list from filters' UI in admin)."""
+    where_sql, params = _filter_to_sql(query_def)
+    sql = f"""
+        SELECT COUNT(DISTINCT m.source_code) FROM mappings m
+        LEFT JOIN cim10_codes c ON c.code = m.source_code
+        WHERE {where_sql}
+    """
+    return con.execute(sql, params).fetchone()[0]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # UI
 # ─────────────────────────────────────────────────────────────────────────

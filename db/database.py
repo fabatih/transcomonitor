@@ -72,11 +72,38 @@ def _migrate(con: sqlite3.Connection) -> None:
 
     New columns added after first release :
       - mappings.target_label (TEXT) — denormalized target label fallback (plan §16.1)
+      - justifications.problematique (TEXT) — typology link (plan §16.7)
     """
     # mappings.target_label
     cols = {r[1] for r in con.execute("PRAGMA table_info(mappings)").fetchall()}
     if "target_label" not in cols:
         con.execute("ALTER TABLE mappings ADD COLUMN target_label TEXT")
+        con.commit()
+    # justifications.problematique
+    jcols = {r[1] for r in con.execute("PRAGMA table_info(justifications)").fetchall()}
+    if "problematique" not in jcols:
+        con.execute("ALTER TABLE justifications ADD COLUMN problematique TEXT")
+        con.commit()
+    # Ensure problematique_types is seeded even on upgraded DBs
+    n = con.execute("SELECT COUNT(*) FROM problematique_types").fetchone()
+    if n is None or n[0] == 0:
+        con.executescript("""
+            INSERT OR IGNORE INTO problematique_types (code, libelle, description, color, sort_order) VALUES
+                ('aucune',                       'Aucune',
+                 'Pas de problématique identifiée à signaler.',                              'success', 10),
+                ('ambiguite_oms',                'Ambiguïté OMS',
+                 'Le mapping OMS source est ambigu (plusieurs candidats équivalents).',      'warning', 20),
+                ('decision_fr_manquante',        'Décision FR manquante',
+                 'Le mapping nécessite une décision nationale (ATIH/ANS) non encore prise.', 'danger',  30),
+                ('postcoord_incomplete',         'Post-coordination incomplète',
+                 'Le cluster MMS est incomplet — axes/specifiers manquants.',                'warning', 40),
+                ('divergence_classant_pmsi',     'Divergence classant PMSI',
+                 'Le mapping change le statut classant du code (impact groupage GHM).',      'danger',  50),
+                ('necessite_demande_oms',        'Nécessite une demande OMS',
+                 'Le concept n''existe pas en CIM-11 — demande de création OMS requise.',    'info',    60),
+                ('autre',                        'Autre',
+                 'Autre problématique — préciser dans le commentaire.',                      'secondary', 70);
+        """)
         con.commit()
 
 

@@ -105,12 +105,16 @@ def fetch_mappings(
     For forward direction, the source is in cim10_codes (joined).
     For reverse, the source is in cim11_linearizations (joined when available).
 
-    Per plan §16.1 : both source and target labels are resolved server-side :
-      - Forward source label : cim10_codes.libelle_fr
-      - Forward target label : cim11_linearizations.label_fr (or assembled from components)
-      - Reverse source label : cim11_linearizations.label_fr
-      - Reverse target label : cim10_codes.libelle_fr
+    Per plan §16.1 : both source and target labels are resolved server-side.
+    Per plan §16.5 : `assignment_list_id` filter narrows to the codes of a
+                     specific worklist (via list_codes_in_assignment).
     """
+    # Extract worklist filter first (applied as a code IN list)
+    assignment_list_id = filters.pop("assignment_list_id", None)
+    code_filter: Optional[list[str]] = None
+    if assignment_list_id is not None:
+        from modules.mod_worklist import list_codes_in_assignment
+        code_filter = list_codes_in_assignment(con, int(assignment_list_id))
     where, params = _build_where(direction, **filters)
     safe_sort = sort if sort in (
         "source_code", "target_mms_code", "target_cim10_code", "fiabilite",
@@ -123,6 +127,14 @@ def fetch_mappings(
         # target_release_id → version_label. For clusters (BA00&XN8P1),
         # the LEFT JOIN won't match — fallback to denormalized target_label
         # (populated at ingest from libelle_cim11_final) per plan §16.1.
+        # Worklist filter (§16.5) : restrict to a set of source codes.
+        if code_filter is not None:
+            if not code_filter:
+                # Empty list → no result
+                return pd.DataFrame()
+            ph = ",".join("?" for _ in code_filter)
+            where = where + f" AND m.source_code IN ({ph})"
+            params = params + list(code_filter)
         sql = f"""
             SELECT m.id, m.source_code, c.libelle_fr AS libelle_source,
                    m.target_mms_code AS target_code, m.target_kind,
@@ -199,6 +211,13 @@ def fetch_mappings(
         if s:
             sql += " AND (m.source_code LIKE ? OR l.label_fr LIKE ?)"
             rev_params.extend([f"{s}%", f"%{s}%"])
+    # Worklist filter (§16.5) : restrict to a set of source codes
+    if code_filter is not None:
+        if not code_filter:
+            return pd.DataFrame()
+        ph = ",".join("?" for _ in code_filter)
+        sql += f" AND m.source_code IN ({ph})"
+        rev_params.extend(code_filter)
     sql += f" ORDER BY {safe_sort} {direction_kw} LIMIT ? OFFSET ?"
     rev_params.extend([limit, offset])
     rows = con.execute(sql, rev_params).fetchall()
@@ -244,8 +263,19 @@ def _assemble_target_label(
 
 def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
     """Count matching mappings (for pagination)."""
+    assignment_list_id = filters.pop("assignment_list_id", None)
+    code_filter: Optional[list[str]] = None
+    if assignment_list_id is not None:
+        from modules.mod_worklist import list_codes_in_assignment
+        code_filter = list_codes_in_assignment(con, int(assignment_list_id))
+        if not code_filter:
+            return 0
     if direction == "forward":
         where, params = _build_where(direction, **filters)
+        if code_filter is not None:
+            ph = ",".join("?" for _ in code_filter)
+            where = where + f" AND m.source_code IN ({ph})"
+            params = params + list(code_filter)
         sql = f"""
             SELECT COUNT(*) FROM mappings m
             LEFT JOIN cim10_codes c ON c.code = m.source_code
@@ -287,6 +317,10 @@ def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
         if s:
             sql += " AND (m.source_code LIKE ? OR l.label_fr LIKE ?)"
             params.extend([f"{s}%", f"%{s}%"])
+    if code_filter is not None:
+        ph = ",".join("?" for _ in code_filter)
+        sql += f" AND m.source_code IN ({ph})"
+        params.extend(code_filter)
     return con.execute(sql, params).fetchone()[0]
 
 
