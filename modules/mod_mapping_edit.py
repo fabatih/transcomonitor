@@ -472,38 +472,85 @@ def mapping_edit_server(
                 class_="mb-3",
             ),
             ui.layout_columns(
-                # Left : edit form (with full-width inputs per plan §16.10)
+                # Left : edit form (with full-width inputs per plan §16.10).
+                # Per plan §16.8 : show ONLY the fields relevant to the
+                # mapping's direction. To change the source, the user must
+                # navigate back to the Forward/Reverse table.
                 ui.div(
                     ui.h6("Cible"),
+                    # Direction-context hint
+                    ui.div(
+                        ui.tags.i(class_="bi bi-info-circle me-1"),
+                        ui.tags.span(
+                            "Pour modifier le code source, retourner dans "
+                            "l'onglet Forward/Reverse et sélectionner le bon code source.",
+                            class_="small text-muted",
+                        ),
+                        class_="alert alert-light py-1 px-2 mb-2",
+                    ),
                     ui.input_select(
                         "edit_target_kind", "Type de cible",
                         choices=kind_choices,
                         selected=m["target_kind"],
                         width="100%",
                     ),
-                    ui.input_text(
-                        "edit_target_mms", "Code MMS cible (forward)",
-                        value=m["target_mms_code"] or "",
-                        placeholder="ex: BA00 ou BA00&XN8P1",
-                        width="100%",
+                    # Forward fields (hidden in reverse but kept in DOM for input tracking)
+                    ui.div(
+                        # MMS code : click-to-edit widget (plan §16.9 + §16.12).
+                        # Display the current code+label as a clickable button
+                        # that opens the EB browser pre-filled. The underlying
+                        # text input is shown only in "manual edit" mode.
+                        ui.tags.label("Code MMS cible", class_="form-label fw-bold"),
+                        ui.input_action_button(
+                            "edit_open_mms_picker",
+                            ui.div(
+                                ui.tags.i(class_="bi bi-search me-2"),
+                                ui.tags.strong(m["target_mms_code"] or "(cliquer pour choisir)"),
+                                ui.tags.small(
+                                    f" — {m.get('target_label') or '—'}",
+                                    class_="text-muted ms-2",
+                                ),
+                            ),
+                            class_="btn btn-outline-primary text-start w-100 mb-2",
+                            style="white-space: normal;",
+                        ),
+                        ui.input_checkbox(
+                            "edit_mms_manual", "Édition manuelle (texte libre)",
+                            value=False,
+                        ),
+                        # Single text input ; hidden when manual edit is OFF.
+                        ui.panel_conditional(
+                            "input['edit_panel-edit_mms_manual']",
+                            ui.input_text(
+                                "edit_target_mms", "",
+                                value=m["target_mms_code"] or "",
+                                placeholder="ex: BA00 ou BA00&XN8P1",
+                                width="100%",
+                            ),
+                        ),
+                        ui.input_text_area(
+                            "edit_foundation_uris", "URIs fondation (mode expert)",
+                            value="\n".join(current_uris),
+                            placeholder="http://id.who.int/icd/entity/...",
+                            rows=3,
+                            width="100%",
+                        ),
+                        ui.input_text(
+                            "edit_release", "Release MMS cible",
+                            value=m.get("target_release") or "2024-01",
+                            width="100%",
+                        ),
+                        style="display: none;" if is_reverse else "",
                     ),
-                    ui.input_text(
-                        "edit_target_cim10", "Code CIM-10 cible (reverse)",
-                        value=m.get("target_cim10_code") or "",
-                        placeholder="ex: A011",
-                        width="100%",
-                    ),
-                    ui.input_text_area(
-                        "edit_foundation_uris", "URIs fondation (mode expert)",
-                        value="\n".join(current_uris),
-                        placeholder="http://id.who.int/icd/entity/...",
-                        rows=3,
-                        width="100%",
-                    ),
-                    ui.input_text(
-                        "edit_release", "Release MMS cible",
-                        value=m.get("target_release") or "2024-01",
-                        width="100%",
+                    # Reverse field (hidden in forward but kept in DOM)
+                    ui.div(
+                        ui.input_text(
+                            "edit_target_cim10", "Code CIM-10 cible",
+                            value=m.get("target_cim10_code") or "",
+                            placeholder="ex: A011",
+                            width="100%",
+                        ),
+                        style="display: none;" if not is_reverse else "",
                     ),
                     ui.input_select(
                         "edit_relation_type", "Type de relation",
@@ -547,10 +594,6 @@ def mapping_edit_server(
                     ui.div(
                         ui.input_action_button("edit_save", "Enregistrer",
                                                 class_="btn btn-primary"),
-                        ui.input_action_button("edit_open_eb", "Ouvrir navigateur CIM-11",
-                                                class_="btn btn-outline-secondary ms-2",
-                                                **{"data-bs-toggle": "modal",
-                                                   "data-bs-target": "#eb_browser_modal"}),
                         class_="d-flex gap-2 mt-3",
                     ),
                     ui.output_ui("edit_message"),
@@ -708,3 +751,21 @@ def mapping_edit_server(
             _edit_msg_state.set(f"✗ Erreur de validation : {e}")
         except Exception as e:
             _edit_msg_state.set(f"✗ Erreur : {type(e).__name__}: {e}")
+
+    # Click on the MMS picker widget → open EB modal pre-filled (plan §16.9 + §16.12)
+    @reactive.effect
+    @reactive.event(input.edit_open_mms_picker)
+    async def _open_eb_with_current_code():
+        m = loaded_mapping()
+        if m is None:
+            return
+        # For clusters, we pre-fill on the first stem
+        code = m.get("target_mms_code") or ""
+        if "&" in code:
+            code = code.split("&")[0]
+        if "/" in code:
+            code = code.split("/")[0]
+        try:
+            await session.send_custom_message("eb_open_with_code", {"code": code})
+        except Exception as e:
+            print(f"[mod_mapping_edit] EB open failed : {e}")

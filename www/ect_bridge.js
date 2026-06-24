@@ -526,3 +526,136 @@ if (typeof Shiny !== "undefined") {
     }
   });
 }
+
+// =====================================================================
+// EB (Embedded Browser) — prefill + reset hooks
+// Per plan §16.9 + §16.12 :
+//   - On modal open (show.bs.modal) : prefill the browser with the
+//     `data-prefill-code` attribute of the modal (set by Python before
+//     opening), so the user sees the current target code instead of a
+//     blank/last-search state.
+//   - On modal hide (hidden.bs.modal) : clear the EB window content,
+//     reset the iframe so the next opening starts fresh.
+// =====================================================================
+
+/**
+ * Prefill the EB browser with the given MMS code.
+ * Strategy: the WHO EB widget reads `data-ctw-browser-hierarchy-selected-entity`
+ * to determine which node to highlight. We also push to its search input.
+ */
+function ectPrefillEbBrowser(code) {
+  if (!code) return;
+  var ebWin = document.querySelector('.ctw-eb-window[data-ctw-ino="2"]');
+  if (!ebWin) {
+    console.warn("[EB] Window element not found for prefill");
+    return;
+  }
+  // Reset previous state first
+  ectResetEbBrowser();
+  // Re-init with the new code
+  ebWin.setAttribute("data-ctw-search-text", code);
+  console.log("[EB] Prefilled with code: " + code);
+  // Re-bind ECT for iNo=2 if available
+  if (typeof ECT !== "undefined" && ECT.Handler) {
+    try {
+      var settings = {
+        apiServerUrl: ECTBridgeConfig.apiServerUrl || "",
+        apiSecured:   ECTBridgeConfig.apiSecured === true || ECTBridgeConfig.apiSecured === "true",
+        useProxy:     ECTBridgeConfig.useProxy === true || ECTBridgeConfig.useProxy === "true",
+        iNo:          "2",
+        language:     ECTBridgeConfig.language || "fr",
+        linearizationName: "mms",
+        searchText:   code,
+        releaseId:    ebWin.getAttribute("data-ctw-release") || "2024-01"
+      };
+      ECT.Handler.configure(settings, {
+        selectedEntityFunction: function(entity) {
+          // When user picks a code in the browser, write it into the
+          // hidden input for Shiny + into the edit form's MMS field.
+          var picked = entity && entity.theCode ? entity.theCode : "";
+          if (picked) {
+            console.log("[EB] User picked: " + picked);
+            // Update the edit form input (if present)
+            var formInput = document.getElementById("edit_panel-edit_target_mms");
+            if (formInput) {
+              formInput.value = picked;
+              formInput.dispatchEvent(new Event("input", { bubbles: true }));
+              formInput.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            // Also push via Shiny channel
+            if (window.Shiny && window.Shiny.setInputValue) {
+              Shiny.setInputValue("eb_picked_code",
+                                   { code: picked, ts: Date.now() },
+                                   { priority: "event" });
+            }
+          }
+        }
+      });
+      bindECT("2");
+    } catch (e) {
+      console.warn("[EB] Configure error during prefill:", e);
+    }
+  }
+}
+
+/**
+ * Reset the EB browser window content : remove search state so the next
+ * opening starts fresh.
+ */
+function ectResetEbBrowser() {
+  var ebWin = document.querySelector('.ctw-eb-window[data-ctw-ino="2"]');
+  if (ebWin) {
+    // Clear inner content
+    ebWin.innerHTML = "";
+    // Remove search-text attribute
+    ebWin.removeAttribute("data-ctw-search-text");
+    console.log("[EB] Reset");
+  }
+}
+
+// Expose for external triggers
+window.ectPrefillEbBrowser = ectPrefillEbBrowser;
+window.ectResetEbBrowser   = ectResetEbBrowser;
+
+// Wire Bootstrap modal events
+document.addEventListener("DOMContentLoaded", function() {
+  var modal = document.getElementById("eb_browser_modal");
+  if (!modal) {
+    console.warn("[EB] eb_browser_modal not found (login screen probably)");
+    return;
+  }
+  modal.addEventListener("show.bs.modal", function(ev) {
+    // Read the code to prefill from the modal's data attribute (set by Python
+    // via the click handler that opens the modal).
+    var code = modal.getAttribute("data-prefill-code");
+    if (code) {
+      ectPrefillEbBrowser(code);
+    }
+  });
+  modal.addEventListener("hidden.bs.modal", function(ev) {
+    ectResetEbBrowser();
+    // Clear the prefill attr so next open without setting it = blank
+    modal.removeAttribute("data-prefill-code");
+  });
+});
+
+// Shiny custom message handler : Python can call session.send_custom_message(
+// "eb_open_with_code", {code: "BA00"}) to open the modal pre-filled.
+if (typeof Shiny !== "undefined" && Shiny.addCustomMessageHandler) {
+  Shiny.addCustomMessageHandler("eb_open_with_code", function(data) {
+    var modal = document.getElementById("eb_browser_modal");
+    if (!modal) return;
+    if (data && data.code) {
+      modal.setAttribute("data-prefill-code", data.code);
+    }
+    // Use Bootstrap's API to show the modal
+    if (window.bootstrap && window.bootstrap.Modal) {
+      var instance = window.bootstrap.Modal.getOrCreateInstance(modal);
+      instance.show();
+    } else {
+      // Fallback : click a hidden button with data-bs-toggle
+      var btn = document.querySelector('[data-bs-target="#eb_browser_modal"]');
+      if (btn) btn.click();
+    }
+  });
+}

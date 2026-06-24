@@ -18,7 +18,7 @@ import sqlite3
 from pathlib import Path
 
 # Path setup
-_app_dir = Path(__file__).parent
+_app_dir = Path(__file__).resolve().parent
 if str(_app_dir) not in sys.path:
     sys.path.insert(0, str(_app_dir))
 
@@ -202,18 +202,34 @@ def server(input, output, session):
     current_user = auth_login_server("login", db_con_factory=_db_con_factory)
     auth_user_bar_server("user_bar", current_user=current_user)
 
-    # Shared reactive: selected mapping id for the edit panel
-    selected_mapping_id = reactive.value(None)
+    # Shared reactive values for cross-tab navigation (plan §16.3)
+    selected_mapping_id    = reactive.value(None)  # → edit panel
+    selected_bidir_source  = reactive.value(None)  # → bidir auto-prefill : {direction, code}
 
-    # Initialize child servers (always mounted in DOM)
     def _on_row_select(mapping_id: int):
+        """Row selected in Forward or Reverse table → propagate to Edit + Bidir."""
         selected_mapping_id.set(mapping_id)
+        # Also seed the Bidir tab with this mapping's source code (§16.3.3)
+        con = get_connection()
+        try:
+            row = con.execute(
+                "SELECT direction, source_code FROM mappings WHERE id = ?",
+                (mapping_id,),
+            ).fetchone()
+        finally:
+            con.close()
+        if row:
+            selected_bidir_source.set({
+                "direction": row[0],
+                "code":      row[1],
+            })
 
     mapping_table_server("fwd_table", direction="forward",
                           on_row_select=_on_row_select)
     mapping_table_server("rev_table", direction="reverse",
                           on_row_select=_on_row_select)
-    split_bidir_server("split_view")
+    split_bidir_server("split_view",
+                         selected_bidir_source=selected_bidir_source)
     mapping_edit_server("edit_panel",
                          mapping_id=selected_mapping_id,
                          current_user=current_user,

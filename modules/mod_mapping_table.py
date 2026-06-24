@@ -299,11 +299,17 @@ def fetch_split_pair(
     Returns dict :
       - forward      : list[dict] of forward mappings (may be empty)
       - reverse      : list[dict] of reverse mappings (may be empty)
-      - is_funnel_forward : bool (len(forward) > 1)
-      - is_funnel_reverse : bool (len(reverse) > 1)
-      - roundtrip_coherence : best coherence across all pairs (STRICT > CATEGORIE > DISCORDANT)
+      - forward_siblings : list[dict] — other forward mappings that share the
+                          SAME target_mms_code as the selected forward(s)
+                          (i.e. the "n:1 forward" funnel : N CIM-10 → 1 CIM-11)
+      - reverse_siblings : list[dict] — other reverse mappings that share the
+                          SAME target_cim10_code as the selected reverse(s)
+                          (i.e. the "n:1 reverse" funnel : N CIM-11 → 1 CIM-10)
+      - is_funnel_forward : bool (len(forward) > 1 OR len(forward_siblings) > 0)
+      - is_funnel_reverse : bool (len(reverse) > 1 OR len(reverse_siblings) > 0)
+      - roundtrip_coherence : best coherence across all pairs
       - roundtrip_explanation : prose summary
-      - roundtrip_matrix     : list of {fwd_idx, rev_idx, coherence, detail} for each pair
+      - roundtrip_matrix     : list of {fwd_idx, rev_idx, coherence, detail}
 
     Each forward/reverse entry includes libelle_source and libelle_target
     resolved via cim10_codes / cim11_linearizations joins (plan §16.1).
@@ -317,13 +323,42 @@ def fetch_split_pair(
         revs: list[dict] = []
         for tc in target_codes:
             revs.extend(_fetch_split_reverse_rows(con, source_code=tc))
+        # Forward siblings : other CIM-10 codes that map to the same target_mms_code(s)
+        forward_siblings: list[dict] = []
+        for tc in target_codes:
+            sibs = _fetch_forward_siblings_by_target(con, target_mms_code=tc,
+                                                      exclude_source=source_code)
+            forward_siblings.extend(sibs)
+        # Reverse siblings : other reverses pointing to the same target as the
+        # *main* reverse(s), excluding the ones already in `revs`.
+        rev_ids = {r["id"] for r in revs}
+        rev_targets = sorted({r["target_cim10_code"] for r in revs if r["target_cim10_code"]})
+        reverse_siblings: list[dict] = []
+        for cim10 in rev_targets:
+            sibs = _fetch_reverse_siblings_by_target(con, target_cim10_code=cim10,
+                                                      exclude_source=None)
+            reverse_siblings.extend(s for s in sibs if s["id"] not in rev_ids)
     else:
         revs = _fetch_split_reverse_rows(con, source_code=source_code)
-        # Forward rows whose source_code matches the reverse target (1:n)
         target_codes = sorted({r["target_cim10_code"] for r in revs if r["target_cim10_code"]})
         fwds: list[dict] = []
         for tc in target_codes:
             fwds.extend(_fetch_split_forward_rows(con, source_code=tc))
+        # Reverse siblings : other CIM-11 codes pointing to same target_cim10_code(s)
+        reverse_siblings: list[dict] = []
+        for tc in target_codes:
+            sibs = _fetch_reverse_siblings_by_target(con, target_cim10_code=tc,
+                                                      exclude_source=source_code)
+            reverse_siblings.extend(sibs)
+        # Forward siblings : other forwards pointing to the same MMS target as the
+        # *main* forward(s), excluding the ones already in `fwds`.
+        fwd_ids = {f["id"] for f in fwds}
+        fwd_targets = sorted({f["target_mms_code"] for f in fwds if f["target_mms_code"]})
+        forward_siblings: list[dict] = []
+        for mms in fwd_targets:
+            sibs = _fetch_forward_siblings_by_target(con, target_mms_code=mms,
+                                                      exclude_source=None)
+            forward_siblings.extend(s for s in sibs if s["id"] not in fwd_ids)
 
     # ── Compute coherence matrix ──
     matrix: list[dict] = []
@@ -359,11 +394,16 @@ def fetch_split_pair(
         ranks = [order.index(m["coherence"]) for m in matrix if m["coherence"] in order]
         best_rank = min(ranks) if ranks else 999
         best = order[best_rank] if best_rank < len(order) else "DISCORDANT"
-        if len(fwds) > 1 or len(revs) > 1:
-            expl = (f"Funnel : {len(fwds)} forward × {len(revs)} reverse = "
-                    f"{len(matrix)} paires. Meilleure cohérence : {best}")
+        if len(fwds) > 1 or len(revs) > 1 or forward_siblings or reverse_siblings:
+            n_sib = len(forward_siblings) + len(reverse_siblings)
+            expl = (f"Funnel : {len(fwds)} forward × {len(revs)} reverse principal(s)"
+                    + (f" + {n_sib} code(s) apparenté(s)" if n_sib else "")
+                    + f". Meilleure cohérence : {best}")
         else:
             expl = matrix[0]["detail"] if matrix else "Cohérence indéterminée."
+
+    is_funnel_fwd = len(fwds) > 1 or len(forward_siblings) > 0
+    is_funnel_rev = len(revs) > 1 or len(reverse_siblings) > 0
 
     return {
         "source_code": source_code,
@@ -372,12 +412,64 @@ def fetch_split_pair(
         "source_chapter": src_chap,
         "forward": fwds,
         "reverse": revs,
-        "is_funnel_forward": len(fwds) > 1,
-        "is_funnel_reverse": len(revs) > 1,
+        "forward_siblings": forward_siblings,
+        "reverse_siblings": reverse_siblings,
+        "is_funnel_forward": is_funnel_fwd,
+        "is_funnel_reverse": is_funnel_rev,
         "roundtrip_coherence": best,
         "roundtrip_explanation": expl,
         "roundtrip_matrix": matrix,
     }
+
+
+def _fetch_forward_siblings_by_target(
+    con: sqlite3.Connection, *,
+    target_mms_code: str, exclude_source: Optional[str],
+) -> list[dict]:
+    """Forward mappings other than `exclude_source` that share the same MMS target."""
+    sql = """
+        SELECT m.*, c.libelle_fr AS libelle_source,
+               c.est_classant, c.est_cma, c.type_code AS source_type_code,
+               COALESCE(lt.label_fr, m.target_label) AS libelle_target
+        FROM mappings m
+        LEFT JOIN cim10_codes c ON c.code = m.source_code
+        LEFT JOIN nomenclature_versions nv ON nv.id = m.target_release_id
+        LEFT JOIN cim11_linearizations lt
+            ON lt.code = m.target_mms_code AND lt.release = nv.version_label
+        WHERE m.direction = 'forward' AND m.target_mms_code = ?
+    """
+    params: list = [target_mms_code]
+    if exclude_source:
+        sql += " AND m.source_code <> ?"
+        params.append(exclude_source)
+    sql += " ORDER BY m.source_code LIMIT 200"  # cap to avoid huge lists
+    rows = con.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _fetch_reverse_siblings_by_target(
+    con: sqlite3.Connection, *,
+    target_cim10_code: str, exclude_source: Optional[str],
+) -> list[dict]:
+    """Reverse mappings other than `exclude_source` that share the same CIM-10 target."""
+    sql = """
+        SELECT m.*, l.label_fr AS libelle_source, l.chapitre AS cim11_chapitre,
+               COALESCE(ct.libelle_fr, m.target_label) AS libelle_target,
+               ct.est_classant, ct.est_cma, ct.type_code AS target_type_code
+        FROM mappings m
+        LEFT JOIN cim11_linearizations l
+            ON l.code = m.source_code
+            AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
+        LEFT JOIN cim10_codes ct ON ct.code = m.target_cim10_code
+        WHERE m.direction = 'reverse' AND m.target_cim10_code = ?
+    """
+    params: list = [target_cim10_code]
+    if exclude_source:
+        sql += " AND m.source_code <> ?"
+        params.append(exclude_source)
+    sql += " ORDER BY m.source_code LIMIT 200"
+    rows = con.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _resolve_code_label(
@@ -475,7 +567,45 @@ def _badge_html(value: str, mapping: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _filter_bar(direction: str) -> ui.Tag:
-    """Render the filter sidebar for a mappings view."""
+    """Render the filter sidebar for a mappings view.
+
+    Per plan §16.2 : filters are direction-specific.
+      - Forward : source = CIM-10 → expose classant/cma/type_code on the source ;
+                  target_kind in {mms_simple, mms_cluster, foundation_only, non_mappable}.
+      - Reverse : target = CIM-10 → expose target_classant/target_cma/target_type_code
+                  on the target ; target_kind in {cim10_code, non_mappable}.
+    """
+    # target_kind choices per direction
+    if direction == "forward":
+        target_kind_choices = {
+            "mms_simple":      "MMS simple (1 code)",
+            "mms_cluster":     "Cluster post-coordonné",
+            "foundation_only": "Fondation seule",
+            "non_mappable":    "Non mappable",
+        }
+    else:
+        target_kind_choices = {
+            "cim10_code":   "Code CIM-10 cible",
+            "non_mappable": "Non mappable",
+        }
+
+    # type_code choices (same for both, but filter applies on source CIM-10
+    # in forward and on target CIM-10 in reverse)
+    type_code_choices = {
+        "INTERNATIONAL_BASE":      "International (base)",
+        "INTERNATIONAL_EXTENSION": "International (extension ClaML)",
+        "FR_ONLY":                 "Spécifique France (FR_ONLY)",
+        "WHO_POST_2019":           "OMS post-2019 (ex. COVID)",
+    }
+
+    # PMSI checkbox section label adapts to direction
+    if direction == "forward":
+        pmsi_label = "Sur la source CIM-10"
+        type_code_label = "Type de code CIM-10 (source)"
+    else:
+        pmsi_label = "Sur la cible CIM-10"
+        type_code_label = "Type de code CIM-10 (cible)"
+
     return ui.div(
         ui.h6("Filtres", class_="mb-2"),
         ui.input_text("filter_search", "Recherche",
@@ -497,18 +627,16 @@ def _filter_bar(direction: str) -> ui.Tag:
         ),
         ui.input_checkbox_group(
             "filter_target_kind", "Type de cible",
-            choices={
-                "mms_simple": "MMS simple",
-                "mms_cluster": "Cluster post-coord.",
-                "foundation_only": "Fondation seule",
-                "cim10_code": "Code CIM-10 (reverse)",
-                "non_mappable": "Non mappable",
-            },
+            choices=target_kind_choices,
         ),
-        ui.input_checkbox("filter_classant", "Uniquement classant PMSI", value=False)
-            if direction == "forward" else None,
-        ui.input_checkbox("filter_cma", "Uniquement CMA", value=False)
-            if direction == "forward" else None,
+        ui.hr(),
+        ui.tags.div(pmsi_label, class_="small fw-bold text-muted mb-1"),
+        ui.input_checkbox("filter_classant", "Uniquement classant PMSI", value=False),
+        ui.input_checkbox("filter_cma", "Uniquement CMA", value=False),
+        ui.input_checkbox_group(
+            "filter_type_code", type_code_label,
+            choices=type_code_choices,
+        ),
         ui.input_action_button("apply_filters", "Appliquer",
                                 class_="btn btn-primary btn-sm w-100 mt-2"),
         ui.input_action_button("reset_filters", "Réinitialiser",
@@ -524,8 +652,9 @@ def _filter_bar(direction: str) -> ui.Tag:
 
 @module.ui
 def mapping_table_ui(direction: str = "forward") -> ui.Tag:
-    """Layout : filter sidebar + paginated table + count + action bar."""
+    """Layout : filter sidebar + paginated table + count + action bar + cross-direction panel."""
     title = "CIM-10 → CIM-11" if direction == "forward" else "CIM-11 → CIM-10"
+    other_dir_label = "reverse" if direction == "forward" else "forward"
     return ui.div(
         ui.h4(
             ui.tags.i(class_="bi bi-table me-2"),
@@ -537,6 +666,14 @@ def mapping_table_ui(direction: str = "forward") -> ui.Tag:
                 ui.output_ui("count_info"),
                 ui.output_data_frame("mappings_grid"),
                 ui.output_ui("pagination_controls"),
+                # Cross-direction panel (plan §16.3.2)
+                ui.tags.hr(class_="my-3"),
+                ui.h6(
+                    ui.tags.i(class_="bi bi-arrows-collapse me-2"),
+                    f"Correspondances {other_dir_label} pour la ligne sélectionnée",
+                    class_="small text-muted",
+                ),
+                ui.output_ui("cross_direction_panel"),
             ),
         ),
     )
@@ -564,9 +701,17 @@ def mapping_table_server(
             "status":      list(input.filter_status() or []),
             "target_kind": list(input.filter_target_kind() or []),
         }
+        type_codes = list(input.filter_type_code() or [])
         if direction == "forward":
+            # On forward, PMSI flags + type_code apply to the source CIM-10
             f["only_classant"] = bool(input.filter_classant())
             f["only_cma"]      = bool(input.filter_cma())
+            f["type_code"]     = type_codes or None
+        else:
+            # On reverse, PMSI flags + type_code apply to the target CIM-10
+            f["target_only_classant"] = bool(input.filter_classant())
+            f["target_only_cma"]      = bool(input.filter_cma())
+            f["target_type_code"]     = type_codes or None
         applied_filters.set(f)
         current_page.set(1)
 
@@ -580,9 +725,9 @@ def mapping_table_server(
         ui.update_checkbox_group("filter_fiabilite", selected=[])
         ui.update_checkbox_group("filter_status", selected=["propose", "en_revue", "valide"])
         ui.update_checkbox_group("filter_target_kind", selected=[])
-        if direction == "forward":
-            ui.update_checkbox("filter_classant", value=False)
-            ui.update_checkbox("filter_cma", value=False)
+        ui.update_checkbox_group("filter_type_code", selected=[])
+        ui.update_checkbox("filter_classant", value=False)
+        ui.update_checkbox("filter_cma", value=False)
 
     # Trigger filter apply once at startup so default status filter takes effect
     @reactive.effect
@@ -679,15 +824,99 @@ def mapping_table_server(
         if current_page() < n_pages:
             current_page.set(current_page() + 1)
 
-    # Row selection → trigger callback with mapping_id
+    # Row selection → trigger callback with mapping_id + remember the row's data
+    selected_row_data = reactive.value(None)
+
     @reactive.effect
     def _on_select():
         sel = input.mappings_grid_selected_rows()
         if sel and on_row_select is not None:
             df = page_data()
             if not df.empty and sel[0] < len(df):
-                mapping_id = int(df.iloc[sel[0]]["id"])
+                row = df.iloc[sel[0]]
+                mapping_id = int(row["id"])
+                selected_row_data.set(row.to_dict())
                 on_row_select(mapping_id)
+        else:
+            selected_row_data.set(None)
+
+    @output
+    @render.ui
+    def cross_direction_panel():
+        """Panel below the grid showing the corresponding mappings in the other
+        direction for the selected row (plan §16.3.2)."""
+        row = selected_row_data()
+        if row is None:
+            return ui.div("Sélectionnez une ligne pour voir les correspondances.",
+                          class_="text-muted small")
+        # The "other direction" depends on this table's direction
+        if direction == "forward":
+            # forward: source=CIM-10, target=MMS. Lookup all reverses where source=target_mms_code
+            target_code = row.get("target_code")
+            if not target_code:
+                return ui.div("Pas de cible (non mappable).", class_="text-muted small")
+            con = get_connection()
+            try:
+                rows = con.execute(
+                    """SELECT m.id, m.source_code, COALESCE(l.label_fr, m.target_label) AS lib,
+                              m.target_cim10_code AS target_code,
+                              m.target_kind, m.fiabilite, m.status
+                       FROM mappings m
+                       LEFT JOIN cim11_linearizations l
+                           ON l.code = m.source_code
+                           AND l.release = (SELECT version_label FROM nomenclature_versions
+                                             WHERE id = m.source_version_id)
+                       WHERE m.direction = 'reverse' AND m.source_code = ?
+                       LIMIT 20""",
+                    (target_code,),
+                ).fetchall()
+            finally:
+                con.close()
+            other = "reverse"
+        else:
+            target_code = row.get("target_code")
+            if not target_code:
+                return ui.div("Pas de cible (non mappable).", class_="text-muted small")
+            con = get_connection()
+            try:
+                rows = con.execute(
+                    """SELECT m.id, m.source_code, c.libelle_fr AS lib,
+                              m.target_mms_code AS target_code,
+                              m.target_kind, m.fiabilite, m.status
+                       FROM mappings m
+                       LEFT JOIN cim10_codes c ON c.code = m.source_code
+                       WHERE m.direction = 'forward' AND m.source_code = ?
+                       LIMIT 20""",
+                    (target_code,),
+                ).fetchall()
+            finally:
+                con.close()
+            other = "forward"
+
+        if not rows:
+            return ui.div(f"Aucun mapping {other} trouvé pour le code cible {target_code}.",
+                          class_="alert alert-light small py-2")
+        items = []
+        for r in rows:
+            items.append(ui.tags.li(
+                ui.tags.span(
+                    f"{r['source_code']} → {r['target_code'] or '—'}",
+                    class_="fw-bold me-2",
+                ),
+                ui.tags.span(
+                    (r["lib"] or "(libellé manquant)")[:60],
+                    class_="text-muted small me-2",
+                ),
+                ui.HTML(f'<span class="badge bg-light text-dark me-1">{r["fiabilite"] or "—"}</span>'),
+                ui.HTML(f'<span class="badge bg-secondary">{r["status"]}</span>'),
+                class_="mb-1",
+            ))
+        return ui.div(
+            ui.tags.span(f"{len(rows)} mapping(s) {other} ", class_="badge bg-info me-2"),
+            ui.tags.small(f"pour la cible {target_code} :", class_="text-muted"),
+            ui.tags.ul(*items, class_="list-unstyled mt-2 small",
+                        style="max-height: 200px; overflow-y: auto;"),
+        )
 
     return {
         "current_page": current_page,
@@ -738,8 +967,46 @@ def split_bidir_ui() -> ui.Tag:
 
 
 @module.server
-def split_bidir_server(input, output, session):
+def split_bidir_server(
+    input, output, session,
+    selected_bidir_source: Optional[reactive.Value] = None,
+):
+    """Server for the bidirectional split view.
+
+    `selected_bidir_source` (optional) : reactive value broadcasting
+    {"direction": "forward"|"reverse", "code": "A011"} from other tabs.
+    When non-None and changed, auto-pre-fills the inputs and triggers lookup.
+    The user can still override manually by typing a code and clicking Afficher
+    (override flag latches until the next external change).
+    """
     pair_data = reactive.value(None)
+    last_external = reactive.value(None)
+
+    # Auto-prefill from external selection (Forward/Reverse tab row selection)
+    if selected_bidir_source is not None:
+        @reactive.effect
+        def _auto_prefill():
+            sel = selected_bidir_source()
+            # Only react to new values (not the same one)
+            if sel is None or sel == last_external():
+                return
+            last_external.set(sel)
+            direction = sel.get("direction")
+            code = (sel.get("code") or "").strip().upper()
+            if not code or direction not in ("forward", "reverse"):
+                return
+            # Push values into the inputs so the user sees them
+            try:
+                ui.update_radio_buttons("split_direction", selected=direction)
+                ui.update_text("split_code", value=code)
+            except Exception:
+                pass
+            # Trigger the lookup
+            con = get_connection()
+            try:
+                pair_data.set(fetch_split_pair(con, code, direction))
+            finally:
+                con.close()
 
     @reactive.effect
     @reactive.event(input.split_lookup)
@@ -822,7 +1089,12 @@ def split_bidir_server(input, output, session):
         if pair is None:
             return ui.div("Saisir un code source et cliquer sur Afficher.",
                           class_="text-muted small")
-        return _format_cards(pair.get("forward") or [], "forward")
+        fwd_main = pair.get("forward") or []
+        siblings = pair.get("forward_siblings") or []
+        return ui.div(
+            _format_cards(fwd_main, "forward"),
+            _format_siblings_section(siblings, "forward") if siblings else ui.div(),
+        )
 
     @output
     @render.ui
@@ -830,7 +1102,38 @@ def split_bidir_server(input, output, session):
         pair = pair_data()
         if pair is None:
             return ui.div()
-        return _format_cards(pair.get("reverse") or [], "reverse")
+        rev_main = pair.get("reverse") or []
+        siblings = pair.get("reverse_siblings") or []
+        return ui.div(
+            _format_cards(rev_main, "reverse"),
+            _format_siblings_section(siblings, "reverse") if siblings else ui.div(),
+        )
+
+    def _format_siblings_section(siblings: list[dict], kind: str) -> ui.Tag:
+        """Render a collapsible section showing other mappings sharing the same target.
+        Limited to 15 by default to keep the UI usable on heavy funnels."""
+        n = len(siblings)
+        show_max = 15
+        return ui.div(
+            ui.tags.hr(class_="my-2"),
+            ui.tags.details(
+                ui.tags.summary(
+                    ui.HTML(f'<span class="badge bg-info text-white me-2">'
+                            f'+{n} code(s) apparenté(s)</span>'),
+                    ui.tags.span(
+                        f"Autres {kind}s pointant vers la même cible "
+                        f"(top {min(n, show_max)})",
+                        class_="small text-muted",
+                    ),
+                    class_="mb-2",
+                ),
+                *[_format_one_card(s, kind) for s in siblings[:show_max]],
+                ui.tags.div(
+                    f"… {n - show_max} autre(s) non affiché(s).",
+                    class_="text-muted small mt-2",
+                ) if n > show_max else ui.div(),
+            ),
+        )
 
     @output
     @render.ui
