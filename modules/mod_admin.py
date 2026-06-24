@@ -60,6 +60,27 @@ def admin_server(input, output, session, current_user: reactive.Value):
             return None
         return u
 
+    def _toast(message: str, *, kind: str = "auto", duration: int = 5) -> None:
+        """Show a Shiny notification (toast) that survives _refresh() re-renders.
+
+        Per plan §16.6 : the previous `output_ui("user_action_msg")` pattern
+        lost the message when _refresh() rebuilt the parent tab — toasts are
+        rendered at the session level and don't get torn down.
+
+        `kind` :
+          - 'auto'    : infer from prefix (✓ → message ; ✗ → error)
+          - 'message' : info-style (default for ✓)
+          - 'warning' : amber
+          - 'error'   : red
+        """
+        if kind == "auto":
+            kind = "message" if message.startswith("✓") else "error"
+        try:
+            ui.notification_show(message, type=kind, duration=duration)
+        except Exception:
+            # Fallback : stdout log
+            print(f"[admin] {message}")
+
     # ── Users tab ────────────────────────────────────────────────────────
 
     @output
@@ -155,11 +176,15 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _create():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             user_action_message.set("✗ Accès refusé")
             return
         username = (input.new_user_name() or "").strip()
         password = (input.new_user_pass() or "").strip()
         if not username or not password:
+            _toast("✗ Username et mot de passe requis")
+
             user_action_message.set("✗ Username et mot de passe requis")
             return
         con = get_connection()
@@ -171,9 +196,13 @@ def admin_server(input, output, session, current_user: reactive.Value):
             audit_user_action(con, user=u, action="admin_user_create",
                                object_type="user", object_id=uid,
                                new_value={"username": username, "role": input.new_user_role()})
+            _toast(f"✓ Utilisateur '{username}' créé (id={uid})")
+
             user_action_message.set(f"✓ Utilisateur '{username}' créé (id={uid})")
             _refresh()
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             user_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -183,6 +212,8 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _update():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             user_action_message.set("✗ Accès refusé")
             return
         try:
@@ -200,9 +231,13 @@ def admin_server(input, output, session, current_user: reactive.Value):
                                old_value={"role": old["role"]},
                                new_value={"role": new_role,
                                           "password_changed": bool(new_pass)})
+            _toast(f"✓ Utilisateur #{uid} mis à jour")
+
             user_action_message.set(f"✓ Utilisateur #{uid} mis à jour")
             _refresh()
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             user_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -212,6 +247,8 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _toggle():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             user_action_message.set("✗ Accès refusé")
             return
         try:
@@ -227,11 +264,17 @@ def admin_server(input, output, session, current_user: reactive.Value):
                                object_type="user", object_id=uid,
                                old_value={"active": bool(old["active"])},
                                new_value={"active": bool(new_active)})
+            _toast(
+                f"✓ Utilisateur #{uid} {'activé' if new_active else 'désactivé'}"
+            )
+
             user_action_message.set(
                 f"✓ Utilisateur #{uid} {'activé' if new_active else 'désactivé'}"
             )
             _refresh()
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             user_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -310,12 +353,16 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _create_list():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             list_action_message.set("✗ Accès refusé")
             return
         from modules.mod_worklist import create_assignment_list
         codes_raw = (input.new_list_codes() or "").strip()
         codes = [c.strip() for c in codes_raw.replace("\n", ",").split(",") if c.strip()]
         if not codes:
+            _toast("✗ Liste de codes vide")
+
             list_action_message.set("✗ Liste de codes vide")
             return
         con = get_connection()
@@ -326,9 +373,13 @@ def admin_server(input, output, session, current_user: reactive.Value):
                 direction=input.new_list_direction(),
                 static_codes=codes,
             )
+            _toast(f"✓ Liste #{lid} créée avec {len(codes)} codes")
+
             list_action_message.set(f"✓ Liste #{lid} créée avec {len(codes)} codes")
             _refresh()
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             list_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -396,11 +447,15 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _save_config():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             config_action_message.set("✗ Accès refusé")
             return
         key = (input.config_key() or "").strip()
         val = input.config_value() or ""
         if not key:
+            _toast("✗ Clé vide")
+
             config_action_message.set("✗ Clé vide")
             return
         con = get_connection()
@@ -411,9 +466,13 @@ def admin_server(input, output, session, current_user: reactive.Value):
                                object_type="config", object_id=key,
                                old_value={"value": old_val},
                                new_value={"value": "(secret)" if "SECRET" in key else val})
+            _toast(f"✓ Paramètre '{key}' mis à jour")
+
             config_action_message.set(f"✓ Paramètre '{key}' mis à jour")
             _refresh()
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             config_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -464,11 +523,15 @@ def admin_server(input, output, session, current_user: reactive.Value):
     def _save_secret():
         u = _require_admin()
         if u is None:
+            _toast("✗ Accès refusé")
+
             secret_action_message.set("✗ Accès refusé")
             return
         key = input.secret_key()
         val = input.secret_value() or ""
         if not val:
+            _toast("✗ Valeur vide")
+
             secret_action_message.set("✗ Valeur vide")
             return
         con = get_connection()
@@ -477,8 +540,12 @@ def admin_server(input, output, session, current_user: reactive.Value):
             audit_user_action(con, user=u, action="admin_secret_set",
                                object_type="config", object_id=key,
                                note="secret stored (encrypted)")
+            _toast(f"✓ Secret '{key}' enregistré (chiffré).")
+
             secret_action_message.set(f"✓ Secret '{key}' enregistré (chiffré).")
         except Exception as e:
+            _toast(f"✗ Erreur : {e}")
+
             secret_action_message.set(f"✗ Erreur : {e}")
         finally:
             con.close()
@@ -564,6 +631,8 @@ def admin_server(input, output, session, current_user: reactive.Value):
                                note="manual backup via UI")
         finally:
             con.close()
+        _toast("✓ Sauvegarde S3 effectuée" if ok else "✗ Sauvegarde S3 échouée")
+
         backup_action_message.set("✓ Sauvegarde S3 effectuée" if ok else "✗ Sauvegarde S3 échouée")
         _refresh()
 
@@ -573,9 +642,14 @@ def admin_server(input, output, session, current_user: reactive.Value):
         from utils import s3_storage
         st = s3_storage.test_connection()
         if st.get("ok"):
+            _toast(f"✓ S3 OK — bucket={st['bucket']}, region={st['region']}, "
+                                       f"versioning={st['versioning']}")
+
             backup_action_message.set(f"✓ S3 OK — bucket={st['bucket']}, region={st['region']}, "
                                        f"versioning={st['versioning']}")
         else:
+            _toast(f"✗ S3 KO : {st.get('error', 'unknown error')}")
+
             backup_action_message.set(f"✗ S3 KO : {st.get('error', 'unknown error')}")
         _refresh()
 
@@ -594,6 +668,12 @@ def admin_server(input, output, session, current_user: reactive.Value):
                                note="manual refresh trigger (run scripts/bootstrap_cim11_refs.py)")
         finally:
             con.close()
+        _toast(
+            "✓ Action loggée. Pour effectuer le rafraîchissement, lancer "
+            "manuellement : python -m scripts.bootstrap_cim11_refs --from-csv "
+            "data/seed/transcodage_pipeline_complete.xlsx --release 2024-01 --upload-s3"
+        )
+
         backup_action_message.set(
             "✓ Action loggée. Pour effectuer le rafraîchissement, lancer "
             "manuellement : python -m scripts.bootstrap_cim11_refs --from-csv "

@@ -242,6 +242,9 @@ CREATE TABLE IF NOT EXISTS mappings (
                              )),
     target_mms_code          TEXT,                                  -- forward : 'BA00' ou 'BA00&XN8P1' ; reverse : NULL
     target_cim10_code        TEXT,                                  -- reverse uniquement : code CIM-10 cible
+    target_label             TEXT,                                  -- dénormalisation §16.1 : libellé de la cible figé à l'ingest/edit
+                                                                    -- (forward : libellé CIM-11 ; reverse : libellé CIM-10)
+                                                                    -- Fallback prioritaire si la JOIN cim11_linearizations / cim10_codes échoue.
     target_foundation_uris   TEXT,                                  -- JSON array de foundation URIs
     target_components        TEXT,                                  -- JSON array (détail cluster)
     target_release_id        INTEGER REFERENCES nomenclature_versions (id),

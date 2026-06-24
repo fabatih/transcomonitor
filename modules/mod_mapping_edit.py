@@ -40,16 +40,42 @@ from services.foundation import (
 # ─────────────────────────────────────────────────────────────────────────
 
 def fetch_mapping(con: sqlite3.Connection, mapping_id: int) -> Optional[dict]:
+    """Fetch a single mapping with its labels (source + target, per plan §16.1)
+    and version metadata. COALESCE with denormalized target_label as fallback."""
     row = con.execute(
-        """SELECT m.*, nv_src.version_label AS source_release,
-                  nv_tgt.version_label AS target_release
+        """SELECT m.*,
+                  nv_src.version_label AS source_release,
+                  nv_tgt.version_label AS target_release,
+                  c_src.libelle_fr     AS source_label_cim10,
+                  l_src.label_fr       AS source_label_cim11,
+                  COALESCE(c_tgt.libelle_fr, m.target_label) AS target_label_cim10_resolved,
+                  COALESCE(l_tgt.label_fr, m.target_label) AS target_label_cim11_resolved
            FROM mappings m
            LEFT JOIN nomenclature_versions nv_src ON nv_src.id = m.source_version_id
            LEFT JOIN nomenclature_versions nv_tgt ON nv_tgt.id = m.target_release_id
+           LEFT JOIN cim10_codes c_src ON c_src.code = m.source_code
+                                       AND m.source_kind = 'cim10_code'
+           LEFT JOIN cim11_linearizations l_src ON l_src.code = m.source_code
+                                                AND l_src.release = nv_src.version_label
+                                                AND m.source_kind = 'mms_code'
+           LEFT JOIN cim10_codes c_tgt ON c_tgt.code = m.target_cim10_code
+           LEFT JOIN cim11_linearizations l_tgt ON l_tgt.code = m.target_mms_code
+                                                AND l_tgt.release = nv_tgt.version_label
            WHERE m.id = ?""",
         (mapping_id,),
     ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    d = dict(row)
+    # Synthesize convenience fields :
+    # source_label : from cim10 (if source_kind=cim10_code) or cim11 (mms_code)
+    d["source_label"] = d.get("source_label_cim10") or d.get("source_label_cim11")
+    # target_label : depends on direction (forward → MMS ; reverse → CIM-10)
+    if d.get("direction") == "forward":
+        d["target_label"] = d.get("target_label_cim11_resolved")
+    else:
+        d["target_label"] = d.get("target_label_cim10_resolved")
+    return d
 
 
 def fetch_proposals(con: sqlite3.Connection, mapping_id: int) -> list[dict]:
@@ -357,7 +383,11 @@ def mapping_edit_server(
     current_user: reactive.Value,     # reactive.value(dict | None)
     on_saved=None,                    # callback : on_saved(mapping_id)
 ):
-    edit_message = reactive.value("")
+    # Renamed from `edit_message` to avoid name collision with the
+    # @output @render.ui below (the decorator wraps the function and the
+    # reactive.value cannot share the name — caused `TypeError: __call__()
+    # missing 1 required positional argument: '_fn'` per plan §16.11).
+    _edit_msg_state = reactive.value("")
 
     @reactive.calc
     def loaded_mapping() -> Optional[dict]:
@@ -409,6 +439,29 @@ def mapping_edit_server(
                 f"Édition mapping #{m['id']} ({m['direction']})",
                 ui.tags.small(f" — {m['source_code']}", class_="text-muted ms-2"),
             ),
+            # Source → target context with labels (per plan §16.1)
+            ui.div(
+                ui.div(
+                    ui.tags.strong(m['source_code']),
+                    ui.tags.small(
+                        f" — {m.get('source_label') or '(libellé manquant)'}",
+                        class_="text-muted ms-2",
+                    ),
+                    class_="mb-1",
+                ),
+                ui.div(
+                    ui.tags.i(class_="bi bi-arrow-down me-2 text-muted"),
+                    ui.tags.strong(
+                        m.get("target_mms_code") or m.get("target_cim10_code") or "(non mappable)"
+                    ),
+                    ui.tags.small(
+                        f" — {m.get('target_label') or '—'}",
+                        class_="text-muted ms-2",
+                    ),
+                    class_="mb-2",
+                ),
+                class_="p-2 mb-3 border rounded bg-light-subtle",
+            ),
             ui.div(
                 ui.tags.strong("Statut courant : "),
                 ui.HTML(f'<span class="badge bg-info">{m["status"]}</span>'),
@@ -419,38 +472,44 @@ def mapping_edit_server(
                 class_="mb-3",
             ),
             ui.layout_columns(
-                # Left : edit form
+                # Left : edit form (with full-width inputs per plan §16.10)
                 ui.div(
                     ui.h6("Cible"),
                     ui.input_select(
                         "edit_target_kind", "Type de cible",
                         choices=kind_choices,
                         selected=m["target_kind"],
+                        width="100%",
                     ),
                     ui.input_text(
                         "edit_target_mms", "Code MMS cible (forward)",
                         value=m["target_mms_code"] or "",
                         placeholder="ex: BA00 ou BA00&XN8P1",
+                        width="100%",
                     ),
                     ui.input_text(
                         "edit_target_cim10", "Code CIM-10 cible (reverse)",
                         value=m.get("target_cim10_code") or "",
                         placeholder="ex: A011",
+                        width="100%",
                     ),
                     ui.input_text_area(
                         "edit_foundation_uris", "URIs fondation (mode expert)",
                         value="\n".join(current_uris),
                         placeholder="http://id.who.int/icd/entity/...",
                         rows=3,
+                        width="100%",
                     ),
                     ui.input_text(
                         "edit_release", "Release MMS cible",
                         value=m.get("target_release") or "2024-01",
+                        width="100%",
                     ),
                     ui.input_select(
                         "edit_relation_type", "Type de relation",
                         choices=RELATION_TYPES,
                         selected=m["relation_type"] or "equivalent",
+                        width="100%",
                     ),
                     ui.hr(),
                     ui.h6("Justification (obligatoire)"),
@@ -458,15 +517,18 @@ def mapping_edit_server(
                         "edit_motif", "Motif",
                         choices=JUSTIFICATION_MOTIFS,
                         selected="arbitrage_expert",
+                        width="100%",
                     ),
                     ui.input_text_area(
                         "edit_commentaire", "Commentaire",
                         rows=4,
                         placeholder="Justification structurée du changement…",
+                        width="100%",
                     ),
                     ui.input_text(
                         "edit_references", "Références (URLs ou IDs, séparées par virgules)",
                         placeholder="https://…, DOI:10…",
+                        width="100%",
                     ),
                     ui.hr(),
                     ui.h6("Action de workflow"),
@@ -480,6 +542,7 @@ def mapping_edit_server(
                             "rejete":   "Rejeter",
                         },
                         selected="",
+                        width="100%",
                     ),
                     ui.div(
                         ui.input_action_button("edit_save", "Enregistrer",
@@ -575,7 +638,7 @@ def mapping_edit_server(
     @output
     @render.ui
     def edit_message():
-        msg = edit_message()
+        msg = _edit_msg_state()
         if not msg:
             return ui.div()
         ok = msg.startswith("✓")
@@ -590,7 +653,7 @@ def mapping_edit_server(
         user = current_user()
         m = loaded_mapping()
         if user is None or m is None:
-            edit_message.set("✗ Utilisateur ou mapping non chargé")
+            _edit_msg_state.set("✗ Utilisateur ou mapping non chargé")
             return
 
         try:
@@ -629,13 +692,19 @@ def mapping_edit_server(
                 con.close()
 
             extra = " (AUTO-VALIDATION tracée)" if result["is_self_validation"] else ""
-            edit_message.set(f"✓ Enregistré — nouveau statut : {result['new_status']}{extra}")
+            success_msg = f"✓ Enregistré — nouveau statut : {result['new_status']}{extra}"
+            _edit_msg_state.set(success_msg)
+            # Persistent toast for visibility across re-renders (§16.6 pattern)
+            try:
+                ui.notification_show(success_msg, type="message", duration=5)
+            except Exception:
+                pass
             if on_saved is not None:
                 on_saved(m["id"])
 
         except authz.AuthzError as e:
-            edit_message.set(f"✗ Accès refusé : {e}")
+            _edit_msg_state.set(f"✗ Accès refusé : {e}")
         except ValueError as e:
-            edit_message.set(f"✗ Erreur de validation : {e}")
+            _edit_msg_state.set(f"✗ Erreur de validation : {e}")
         except Exception as e:
-            edit_message.set(f"✗ Erreur : {type(e).__name__}: {e}")
+            _edit_msg_state.set(f"✗ Erreur : {type(e).__name__}: {e}")

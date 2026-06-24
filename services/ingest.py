@@ -352,6 +352,7 @@ def ingest_forward_mappings(
             target_kind,
             tgt if target_kind in ("mms_simple", "mms_cluster") else None,
             None,                                   # target_cim10_code (reverse only)
+            _to_str_or_none(row["libelle_cim11_final"]),  # target_label (denormalized, §16.1)
             None,                                   # target_foundation_uris (filled later by sync)
             None,                                   # target_components (filled later for clusters)
             cim11_release_id if target_kind in ("mms_simple", "mms_cluster") else None,
@@ -367,11 +368,11 @@ def ingest_forward_mappings(
             cur = con.executemany(
                 """INSERT INTO mappings (
                        direction, source_code, source_kind, source_version_id,
-                       target_kind, target_mms_code, target_cim10_code,
+                       target_kind, target_mms_code, target_cim10_code, target_label,
                        target_foundation_uris, target_components, target_release_id,
                        relation_type, fiabilite, source_decision, status,
                        pipeline_traceability, impacts_aval, actions_necessaires
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 batch,
             )
             n_inserted += cur.rowcount
@@ -380,11 +381,11 @@ def ingest_forward_mappings(
         cur = con.executemany(
             """INSERT INTO mappings (
                    direction, source_code, source_kind, source_version_id,
-                   target_kind, target_mms_code, target_cim10_code,
+                   target_kind, target_mms_code, target_cim10_code, target_label,
                    target_foundation_uris, target_components, target_release_id,
                    relation_type, fiabilite, source_decision, status,
                    pipeline_traceability, impacts_aval, actions_necessaires
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             batch,
         )
         n_inserted += cur.rowcount
@@ -428,6 +429,7 @@ def ingest_reverse_mappings(
             target_kind,
             None,                                   # target_mms_code (forward only)
             tgt_cim10,
+            _to_str_or_none(row["libelle_cim10_final"]),  # target_label (denormalized, §16.1)
             None,                                   # target_foundation_uris (reverse: derived from source via sync)
             None,                                   # target_components
             cim10_version_id if target_kind == "cim10_code" else None,
@@ -443,11 +445,11 @@ def ingest_reverse_mappings(
             cur = con.executemany(
                 """INSERT INTO mappings (
                        direction, source_code, source_kind, source_version_id,
-                       target_kind, target_mms_code, target_cim10_code,
+                       target_kind, target_mms_code, target_cim10_code, target_label,
                        target_foundation_uris, target_components, target_release_id,
                        relation_type, fiabilite, source_decision, status,
                        pipeline_traceability, impacts_aval, actions_necessaires
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 batch,
             )
             n_inserted += cur.rowcount
@@ -456,11 +458,11 @@ def ingest_reverse_mappings(
         cur = con.executemany(
             """INSERT INTO mappings (
                    direction, source_code, source_kind, source_version_id,
-                   target_kind, target_mms_code, target_cim10_code,
+                   target_kind, target_mms_code, target_cim10_code, target_label,
                    target_foundation_uris, target_components, target_release_id,
                    relation_type, fiabilite, source_decision, status,
                    pipeline_traceability, impacts_aval, actions_necessaires
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             batch,
         )
         n_inserted += cur.rowcount

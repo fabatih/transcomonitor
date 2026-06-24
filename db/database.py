@@ -49,16 +49,35 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db(con: Optional[sqlite3.Connection] = None) -> None:
-    """Initialize the database schema if not yet present."""
+    """Initialize the database schema if not yet present.
+
+    Also applies incremental migrations for schema changes introduced after
+    the initial release. New columns added via ALTER TABLE on existing DBs
+    so we don't break in-place upgrades.
+    """
     close = False
     if con is None:
         con = get_connection()
         close = True
     with open(_schema_path, encoding="utf-8") as f:
         con.executescript(f.read())
+    _migrate(con)
     con.commit()
     if close:
         con.close()
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Apply incremental schema migrations to existing DBs.
+
+    New columns added after first release :
+      - mappings.target_label (TEXT) — denormalized target label fallback (plan §16.1)
+    """
+    # mappings.target_label
+    cols = {r[1] for r in con.execute("PRAGMA table_info(mappings)").fetchall()}
+    if "target_label" not in cols:
+        con.execute("ALTER TABLE mappings ADD COLUMN target_label TEXT")
+        con.commit()
 
 
 def is_db_initialized(con: Optional[sqlite3.Connection] = None) -> bool:

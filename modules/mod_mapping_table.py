@@ -47,9 +47,18 @@ def _build_where(
     source_decision: Optional[str] = None,
     only_classant: bool = False,
     only_cma: bool = False,
+    type_code: Optional[list[str]] = None,
     text_search: Optional[str] = None,
+    # Reverse-only filters (passed through but handled in fetch_mappings reverse branch)
+    target_type_code: Optional[list[str]] = None,
+    target_only_classant: bool = False,
+    target_only_cma: bool = False,
 ) -> tuple[str, list]:
-    """Build a parameterized WHERE clause for a mappings query."""
+    """Build a parameterized WHERE clause for a mappings query (forward direction).
+
+    Reverse direction filters are handled directly in fetch_mappings to keep
+    the SQL clean (the JOIN structure differs).
+    """
     where = ["m.direction = ?"]
     params: list = [direction]
 
@@ -70,6 +79,9 @@ def _build_where(
         where.append("c.est_classant = 1")
     if only_cma:
         where.append("c.est_cma = 1")
+    if type_code:
+        ph = ",".join("?" for _ in type_code)
+        where.append(f"c.type_code IN ({ph})"); params.extend(type_code)
     if text_search:
         s = text_search.strip()
         if s:
@@ -92,6 +104,12 @@ def fetch_mappings(
 
     For forward direction, the source is in cim10_codes (joined).
     For reverse, the source is in cim11_linearizations (joined when available).
+
+    Per plan §16.1 : both source and target labels are resolved server-side :
+      - Forward source label : cim10_codes.libelle_fr
+      - Forward target label : cim11_linearizations.label_fr (or assembled from components)
+      - Reverse source label : cim11_linearizations.label_fr
+      - Reverse target label : cim10_codes.libelle_fr
     """
     where, params = _build_where(direction, **filters)
     safe_sort = sort if sort in (
@@ -101,81 +119,127 @@ def fetch_mappings(
     direction_kw = "DESC" if desc else "ASC"
 
     if direction == "forward":
+        # Resolve target_mms_code label via cim11_linearizations using
+        # target_release_id → version_label. For clusters (BA00&XN8P1),
+        # the LEFT JOIN won't match — fallback to denormalized target_label
+        # (populated at ingest from libelle_cim11_final) per plan §16.1.
         sql = f"""
             SELECT m.id, m.source_code, c.libelle_fr AS libelle_source,
                    m.target_mms_code AS target_code, m.target_kind,
-                   m.target_foundation_uris,
+                   m.target_components, m.target_foundation_uris,
+                   COALESCE(lt.label_fr, m.target_label) AS libelle_target_simple,
                    m.relation_type, m.fiabilite, m.source_decision, m.status,
-                   c.est_classant, c.est_cma, c.niveau_cma, c.chapitre,
+                   c.est_classant, c.est_cma, c.niveau_cma, c.chapitre, c.type_code,
                    m.last_validated_at, m.updated_at
             FROM mappings m
             LEFT JOIN cim10_codes c ON c.code = m.source_code
+            LEFT JOIN nomenclature_versions nv ON nv.id = m.target_release_id
+            LEFT JOIN cim11_linearizations lt
+                ON lt.code = m.target_mms_code
+                AND lt.release = nv.version_label
             WHERE {where}
             ORDER BY {safe_sort} {direction_kw}
             LIMIT ? OFFSET ?
         """
-    else:  # reverse
-        sql = f"""
-            SELECT m.id, m.source_code, l.label_fr AS libelle_source,
-                   m.target_cim10_code AS target_code, m.target_kind,
-                   m.target_foundation_uris,
-                   m.relation_type, m.fiabilite, m.source_decision, m.status,
-                   NULL AS est_classant, NULL AS est_cma, NULL AS niveau_cma,
-                   l.chapitre,
-                   m.last_validated_at, m.updated_at
-            FROM mappings m
-            LEFT JOIN cim11_linearizations l
-                ON l.code = m.source_code
-                AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
-            LEFT JOIN cim10_codes c ON c.code = m.target_cim10_code
-            WHERE {where.replace('c.', 'l.' if 'c.chapitre' in where else 'c.')}
-            ORDER BY {safe_sort} {direction_kw}
-            LIMIT ? OFFSET ?
-        """
-        # In reverse mode, c. references must point to target c (joined separately).
-        # Above's pragmatic fix isn't perfect — use a cleaner pattern for reverse :
-        sql = f"""
-            SELECT m.id, m.source_code, l.label_fr AS libelle_source,
-                   m.target_cim10_code AS target_code, m.target_kind,
-                   m.target_foundation_uris,
-                   m.relation_type, m.fiabilite, m.source_decision, m.status,
-                   c.est_classant, c.est_cma, c.niveau_cma, l.chapitre,
-                   m.last_validated_at, m.updated_at
-            FROM mappings m
-            LEFT JOIN cim11_linearizations l
-                ON l.code = m.source_code
-                AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
-            LEFT JOIN cim10_codes c ON c.code = m.target_cim10_code
-            WHERE m.direction = ?
-        """
-        # Rebuild params for reverse (no cim10_codes join on source side)
-        rev_params: list = [direction]
-        if filters.get("chapitre"):
-            sql += " AND l.chapitre = ?"; rev_params.append(filters["chapitre"])
-        if filters.get("fiabilite"):
-            ph = ",".join("?" for _ in filters["fiabilite"])
-            sql += f" AND m.fiabilite IN ({ph})"; rev_params.extend(filters["fiabilite"])
-        if filters.get("status"):
-            ph = ",".join("?" for _ in filters["status"])
-            sql += f" AND m.status IN ({ph})"; rev_params.extend(filters["status"])
-        if filters.get("target_kind"):
-            ph = ",".join("?" for _ in filters["target_kind"])
-            sql += f" AND m.target_kind IN ({ph})"; rev_params.extend(filters["target_kind"])
-        if filters.get("source_decision"):
-            sql += " AND m.source_decision = ?"; rev_params.append(filters["source_decision"])
-        if filters.get("text_search"):
-            s = filters["text_search"].strip()
-            if s:
-                sql += " AND (m.source_code LIKE ? OR l.label_fr LIKE ?)"
-                rev_params.extend([f"{s}%", f"%{s}%"])
-        sql += f" ORDER BY {safe_sort} {direction_kw} LIMIT ? OFFSET ?"
-        rev_params.extend([limit, offset])
-        rows = con.execute(sql, rev_params).fetchall()
-        return pd.DataFrame([dict(r) for r in rows])
+        params.extend([limit, offset])
+        rows = con.execute(sql, params).fetchall()
+        df = pd.DataFrame([dict(r) for r in rows])
+        if not df.empty:
+            df["libelle_target"] = df.apply(
+                lambda r: _assemble_target_label(
+                    r["target_kind"], r["target_code"],
+                    r["libelle_target_simple"], r["target_components"],
+                ),
+                axis=1,
+            )
+            df = df.drop(columns=["target_components", "libelle_target_simple"])
+        return df
 
-    params.extend([limit, offset])
-    rows = con.execute(sql, params).fetchall()
-    return pd.DataFrame([dict(r) for r in rows])
+    # ── Reverse ──
+    sql = """
+        SELECT m.id, m.source_code, l.label_fr AS libelle_source,
+               m.target_cim10_code AS target_code, m.target_kind,
+               m.target_components, m.target_foundation_uris,
+               COALESCE(ct.libelle_fr, m.target_label) AS libelle_target,
+               m.relation_type, m.fiabilite, m.source_decision, m.status,
+               ct.est_classant, ct.est_cma, ct.niveau_cma, l.chapitre, ct.type_code,
+               m.last_validated_at, m.updated_at
+        FROM mappings m
+        LEFT JOIN cim11_linearizations l
+            ON l.code = m.source_code
+            AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
+        LEFT JOIN cim10_codes ct ON ct.code = m.target_cim10_code
+        WHERE m.direction = ?
+    """
+    rev_params: list = [direction]
+    # Reverse filters: source side = cim11 (chapitre via l.chapitre),
+    #                  target side = cim10 (type_code, classant, cma via ct.*).
+    if filters.get("chapitre"):
+        sql += " AND l.chapitre = ?"; rev_params.append(filters["chapitre"])
+    if filters.get("fiabilite"):
+        ph = ",".join("?" for _ in filters["fiabilite"])
+        sql += f" AND m.fiabilite IN ({ph})"; rev_params.extend(filters["fiabilite"])
+    if filters.get("status"):
+        ph = ",".join("?" for _ in filters["status"])
+        sql += f" AND m.status IN ({ph})"; rev_params.extend(filters["status"])
+    if filters.get("target_kind"):
+        ph = ",".join("?" for _ in filters["target_kind"])
+        sql += f" AND m.target_kind IN ({ph})"; rev_params.extend(filters["target_kind"])
+    if filters.get("source_decision"):
+        sql += " AND m.source_decision = ?"; rev_params.append(filters["source_decision"])
+    if filters.get("target_type_code"):
+        ph = ",".join("?" for _ in filters["target_type_code"])
+        sql += f" AND ct.type_code IN ({ph})"; rev_params.extend(filters["target_type_code"])
+    if filters.get("target_only_classant"):
+        sql += " AND ct.est_classant = 1"
+    if filters.get("target_only_cma"):
+        sql += " AND ct.est_cma = 1"
+    if filters.get("text_search"):
+        s = filters["text_search"].strip()
+        if s:
+            sql += " AND (m.source_code LIKE ? OR l.label_fr LIKE ?)"
+            rev_params.extend([f"{s}%", f"%{s}%"])
+    sql += f" ORDER BY {safe_sort} {direction_kw} LIMIT ? OFFSET ?"
+    rev_params.extend([limit, offset])
+    rows = con.execute(sql, rev_params).fetchall()
+    df = pd.DataFrame([dict(r) for r in rows])
+    if not df.empty:
+        # Reverse target is always a cim10_code → label already resolved
+        df = df.drop(columns=["target_components"])
+    return df
+
+
+def _assemble_target_label(
+    target_kind: str, target_code: Optional[str],
+    simple_label: Optional[str], target_components_json: Optional[str],
+) -> str:
+    """Forward only : build the human-readable label for the target.
+
+    - mms_simple   : just the simple label (cim11_linearizations.label_fr)
+    - mms_cluster  : join component labels with ' & ' / ' / '
+    - foundation_only : '(fondation seule)'
+    - non_mappable : '—'
+    """
+    if target_kind == "non_mappable" or not target_code:
+        return "—"
+    if target_kind == "foundation_only":
+        return "(fondation directe)"
+    if target_kind == "mms_simple":
+        return simple_label or "(libellé manquant)"
+    if target_kind == "mms_cluster":
+        # Try to assemble from target_components first
+        try:
+            comps = json.loads(target_components_json) if target_components_json else []
+        except (json.JSONDecodeError, TypeError):
+            comps = []
+        # Components may have been enriched at edit time with `label_fr` but the seed
+        # ingest doesn't store per-component labels. Fallback : show the raw cluster.
+        labels = [c.get("label_fr") for c in comps if c.get("label_fr")]
+        if labels:
+            sep = " & "  # simplistic — distinguishing / vs & requires re-parsing
+            return sep.join(labels)
+        return simple_label or target_code  # fallback to raw cluster string
+    return simple_label or "—"
 
 
 def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
@@ -194,6 +258,7 @@ def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
         LEFT JOIN cim11_linearizations l
             ON l.code = m.source_code
             AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
+        LEFT JOIN cim10_codes ct ON ct.code = m.target_cim10_code
         WHERE m.direction = ?
     """
     params: list = [direction]
@@ -210,6 +275,13 @@ def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
         sql += f" AND m.target_kind IN ({ph})"; params.extend(filters["target_kind"])
     if filters.get("source_decision"):
         sql += " AND m.source_decision = ?"; params.append(filters["source_decision"])
+    if filters.get("target_type_code"):
+        ph = ",".join("?" for _ in filters["target_type_code"])
+        sql += f" AND ct.type_code IN ({ph})"; params.extend(filters["target_type_code"])
+    if filters.get("target_only_classant"):
+        sql += " AND ct.est_classant = 1"
+    if filters.get("target_only_cma"):
+        sql += " AND ct.est_cma = 1"
     if filters.get("text_search"):
         s = filters["text_search"].strip()
         if s:
@@ -221,67 +293,153 @@ def count_mappings(con: sqlite3.Connection, direction: str, **filters) -> int:
 def fetch_split_pair(
     con: sqlite3.Connection, source_code: str, source_direction: str,
 ) -> dict:
-    """For a given source code in a direction, return both the forward and
-    reverse mappings (round-trip view). Returns dict with 'forward', 'reverse',
-    'roundtrip_coherence', 'roundtrip_explanation'.
-    """
-    if source_direction == "forward":
-        # forward: A → B ; lookup reverse where source_code = B
-        fwd = con.execute(
-            "SELECT * FROM mappings WHERE direction='forward' AND source_code = ?",
-            (source_code,),
-        ).fetchone()
-        rev = None
-        if fwd and fwd["target_mms_code"]:
-            rev = con.execute(
-                "SELECT * FROM mappings WHERE direction='reverse' AND source_code = ?",
-                (fwd["target_mms_code"],),
-            ).fetchone()
-    else:
-        # reverse: B → A ; lookup forward where source_code = A
-        rev = con.execute(
-            "SELECT * FROM mappings WHERE direction='reverse' AND source_code = ?",
-            (source_code,),
-        ).fetchone()
-        fwd = None
-        if rev and rev["target_cim10_code"]:
-            fwd = con.execute(
-                "SELECT * FROM mappings WHERE direction='forward' AND source_code = ?",
-                (rev["target_cim10_code"],),
-            ).fetchone()
+    """For a given source code in a direction, return ALL the forward and
+    reverse mappings (round-trip view, supports funnels per plan §16.13).
 
-    # Round-trip coherence
-    coherence = "NO_DATA"
-    explanation = ""
-    if fwd and rev:
-        # Forward says A → B ; reverse from B says B → A' ; compare A vs A'
-        forward_source = fwd["source_code"]
-        reverse_target = rev["target_cim10_code"]
-        if forward_source == reverse_target:
-            coherence = "STRICT"
-            explanation = f"Round-trip strict : {forward_source} ↔ {fwd['target_mms_code']}"
-        elif (forward_source and reverse_target and
-              forward_source[:3] == reverse_target[:3]):
-            coherence = "CATEGORIE"
-            explanation = (f"Même catégorie 3 caractères ({forward_source[:3]}) : "
-                           f"{forward_source} → {fwd['target_mms_code']} → {reverse_target}")
+    Returns dict :
+      - forward      : list[dict] of forward mappings (may be empty)
+      - reverse      : list[dict] of reverse mappings (may be empty)
+      - is_funnel_forward : bool (len(forward) > 1)
+      - is_funnel_reverse : bool (len(reverse) > 1)
+      - roundtrip_coherence : best coherence across all pairs (STRICT > CATEGORIE > DISCORDANT)
+      - roundtrip_explanation : prose summary
+      - roundtrip_matrix     : list of {fwd_idx, rev_idx, coherence, detail} for each pair
+
+    Each forward/reverse entry includes libelle_source and libelle_target
+    resolved via cim10_codes / cim11_linearizations joins (plan §16.1).
+    """
+    src_label, src_chap = _resolve_code_label(con, source_code, source_direction)
+
+    if source_direction == "forward":
+        fwds = _fetch_split_forward_rows(con, source_code=source_code)
+        # Reverse rows for each distinct target_mms_code (funnel n:1)
+        target_codes = sorted({f["target_mms_code"] for f in fwds if f["target_mms_code"]})
+        revs: list[dict] = []
+        for tc in target_codes:
+            revs.extend(_fetch_split_reverse_rows(con, source_code=tc))
+    else:
+        revs = _fetch_split_reverse_rows(con, source_code=source_code)
+        # Forward rows whose source_code matches the reverse target (1:n)
+        target_codes = sorted({r["target_cim10_code"] for r in revs if r["target_cim10_code"]})
+        fwds: list[dict] = []
+        for tc in target_codes:
+            fwds.extend(_fetch_split_forward_rows(con, source_code=tc))
+
+    # ── Compute coherence matrix ──
+    matrix: list[dict] = []
+    for i, f in enumerate(fwds):
+        for j, r in enumerate(revs):
+            fs = f["source_code"]
+            rt = r.get("target_cim10_code")
+            if fs and rt and fs == rt:
+                c = "STRICT"
+                detail = f"Round-trip strict : {fs} ↔ {f['target_mms_code']}"
+            elif fs and rt and fs[:3] == rt[:3]:
+                c = "CATEGORIE"
+                detail = f"Même catégorie 3 caractères ({fs[:3]})"
+            else:
+                c = "DISCORDANT"
+                detail = f"Forward {fs} → {f['target_mms_code']} ; reverse → {rt}"
+            matrix.append({
+                "fwd_idx": i, "rev_idx": j,
+                "coherence": c, "detail": detail,
+            })
+
+    # Synthesize best coherence
+    if not fwds and not revs:
+        best = "NO_DATA"; expl = "Aucun mapping trouvé."
+    elif fwds and not revs:
+        best = "C11_NOT_IN_REVERSE"
+        expl = f"Le(s) code(s) cible(s) {[f['target_mms_code'] for f in fwds]} n'apparaît pas en reverse."
+    elif revs and not fwds:
+        best = "C10_NOT_IN_FORWARD"
+        expl = f"Le(s) code(s) cible(s) {[r['target_cim10_code'] for r in revs]} n'apparaît pas en forward."
+    else:
+        order = ["STRICT", "CATEGORIE", "DISCORDANT"]
+        ranks = [order.index(m["coherence"]) for m in matrix if m["coherence"] in order]
+        best_rank = min(ranks) if ranks else 999
+        best = order[best_rank] if best_rank < len(order) else "DISCORDANT"
+        if len(fwds) > 1 or len(revs) > 1:
+            expl = (f"Funnel : {len(fwds)} forward × {len(revs)} reverse = "
+                    f"{len(matrix)} paires. Meilleure cohérence : {best}")
         else:
-            coherence = "DISCORDANT"
-            explanation = (f"Discordance : forward {forward_source} → {fwd['target_mms_code']}, "
-                           f"reverse → {reverse_target}")
-    elif fwd and not rev:
-        coherence = "C11_NOT_IN_REVERSE"
-        explanation = f"Le code cible {fwd['target_mms_code']} n'apparaît pas en reverse."
-    elif rev and not fwd:
-        coherence = "C10_NOT_IN_FORWARD"
-        explanation = f"Le code cible {rev['target_cim10_code']} n'apparaît pas en forward."
+            expl = matrix[0]["detail"] if matrix else "Cohérence indéterminée."
 
     return {
-        "forward": dict(fwd) if fwd else None,
-        "reverse": dict(rev) if rev else None,
-        "roundtrip_coherence": coherence,
-        "roundtrip_explanation": explanation,
+        "source_code": source_code,
+        "source_direction": source_direction,
+        "source_label": src_label,
+        "source_chapter": src_chap,
+        "forward": fwds,
+        "reverse": revs,
+        "is_funnel_forward": len(fwds) > 1,
+        "is_funnel_reverse": len(revs) > 1,
+        "roundtrip_coherence": best,
+        "roundtrip_explanation": expl,
+        "roundtrip_matrix": matrix,
     }
+
+
+def _resolve_code_label(
+    con: sqlite3.Connection, code: str, direction: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (label_fr, chapitre) for a source code in a given direction."""
+    if direction == "forward":
+        row = con.execute(
+            "SELECT libelle_fr, chapitre FROM cim10_codes WHERE code = ?", (code,)
+        ).fetchone()
+        if row:
+            return row[0], row[1]
+    else:
+        # CIM-11 source : try the most recent release first
+        row = con.execute(
+            """SELECT label_fr, chapitre FROM cim11_linearizations
+               WHERE code = ? ORDER BY release DESC LIMIT 1""", (code,)
+        ).fetchone()
+        if row:
+            return row[0], row[1]
+    return None, None
+
+
+def _fetch_split_forward_rows(
+    con: sqlite3.Connection, *, source_code: str,
+) -> list[dict]:
+    """Forward mappings for a given CIM-10 source code, with target label."""
+    rows = con.execute(
+        """SELECT m.*, c.libelle_fr AS libelle_source,
+                  c.est_classant, c.est_cma, c.type_code AS source_type_code,
+                  COALESCE(lt.label_fr, m.target_label) AS libelle_target
+           FROM mappings m
+           LEFT JOIN cim10_codes c ON c.code = m.source_code
+           LEFT JOIN nomenclature_versions nv ON nv.id = m.target_release_id
+           LEFT JOIN cim11_linearizations lt
+               ON lt.code = m.target_mms_code AND lt.release = nv.version_label
+           WHERE m.direction = 'forward' AND m.source_code = ?
+           ORDER BY m.id""",
+        (source_code,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _fetch_split_reverse_rows(
+    con: sqlite3.Connection, *, source_code: str,
+) -> list[dict]:
+    """Reverse mappings for a given CIM-11 source code, with target label."""
+    rows = con.execute(
+        """SELECT m.*, l.label_fr AS libelle_source, l.chapitre AS cim11_chapitre,
+                  COALESCE(ct.libelle_fr, m.target_label) AS libelle_target,
+                  ct.est_classant, ct.est_cma,
+                  ct.type_code AS target_type_code
+           FROM mappings m
+           LEFT JOIN cim11_linearizations l
+               ON l.code = m.source_code
+               AND l.release = (SELECT version_label FROM nomenclature_versions WHERE id = m.source_version_id)
+           LEFT JOIN cim10_codes ct ON ct.code = m.target_cim10_code
+           WHERE m.direction = 'reverse' AND m.source_code = ?
+           ORDER BY m.id""",
+        (source_code,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -472,18 +630,21 @@ def mapping_table_server(
         df = page_data()
         if df.empty:
             return render.DataGrid(pd.DataFrame(columns=["(aucun résultat)"]))
-        # Project useful columns + format
-        cols = ["id", "source_code", "libelle_source", "target_code",
+        # Project useful columns + format (per plan §16.1 : show both
+        # source and target labels)
+        cols = ["id", "source_code", "libelle_source", "target_code", "libelle_target",
                 "target_kind", "relation_type", "fiabilite",
                 "source_decision", "status"]
         if direction == "forward":
             cols += ["est_classant", "est_cma", "chapitre"]
         else:
-            cols += ["chapitre"]
+            cols += ["est_classant", "est_cma", "chapitre", "type_code"]
+        cols = [c for c in cols if c in df.columns]
         df = df[cols].copy()
-        # Truncate long labels
-        if "libelle_source" in df.columns:
-            df["libelle_source"] = df["libelle_source"].astype(str).str.slice(0, 60)
+        # Truncate long labels for grid readability
+        for label_col in ("libelle_source", "libelle_target"):
+            if label_col in df.columns:
+                df[label_col] = df[label_col].astype(str).str.slice(0, 60)
         return render.DataGrid(df, selection_mode="row", height="600px",
                                 width="100%", summary=False)
 
@@ -594,22 +755,33 @@ def split_bidir_server(input, output, session):
         finally:
             con.close()
 
-    def _format_card(m: Optional[dict], kind: str) -> ui.Tag:
-        if not m:
-            return ui.div("Aucun mapping trouvé.", class_="alert alert-warning")
-        target = m.get("target_mms_code") or m.get("target_cim10_code") or "(non mappable)"
+    def _format_one_card(m: dict, kind: str) -> ui.Tag:
+        """Render a single mapping as a card.
+        Used by both forward (kind='forward') and reverse (kind='reverse') panels."""
+        source_label = m.get("libelle_source") or "(libellé manquant)"
+        target_code = m.get("target_mms_code") or m.get("target_cim10_code") or "(non mappable)"
+        target_label = m.get("libelle_target") or "—"
+        try:
+            f_uris = json.loads(m["target_foundation_uris"]) if m.get("target_foundation_uris") else []
+        except (json.JSONDecodeError, TypeError):
+            f_uris = []
         return ui.div(
             ui.div(
                 ui.div(
-                    ui.tags.strong(f"{m['source_code']}"),
-                    " → ",
-                    ui.tags.strong(target),
-                    class_="h5 mb-2",
+                    ui.tags.strong(m["source_code"]),
+                    ui.tags.small(f" — {source_label}", class_="text-muted ms-2"),
+                    class_="mb-1",
                 ),
                 ui.div(
-                    ui.HTML(_badge_html(m["fiabilite"], _FIAB_BADGE)), " ",
-                    ui.HTML(_badge_html(m["status"], _STATUS_BADGE)), " ",
-                    ui.tags.span(f"target_kind: {m['target_kind']}",
+                    ui.tags.i(class_="bi bi-arrow-down me-2 text-muted"),
+                    ui.tags.strong(target_code),
+                    ui.tags.small(f" — {target_label}", class_="text-muted ms-2"),
+                    class_="h6 mb-2",
+                ),
+                ui.div(
+                    ui.HTML(_badge_html(m.get("fiabilite"), _FIAB_BADGE)), " ",
+                    ui.HTML(_badge_html(m.get("status"), _STATUS_BADGE)), " ",
+                    ui.tags.span(f"target_kind: {m.get('target_kind')}",
                                  class_="badge bg-light text-dark"),
                 ),
                 ui.tags.dl(
@@ -617,27 +789,48 @@ def split_bidir_server(input, output, session):
                     ui.tags.dt("Source de décision"), ui.tags.dd(m.get("source_decision") or "—"),
                     ui.tags.dt("Foundation URIs"),
                     ui.tags.dd(
-                        ", ".join(json.loads(m["target_foundation_uris"]))
-                        if m.get("target_foundation_uris") else "—"
+                        ", ".join(u.split("/")[-1] for u in f_uris) if f_uris else "—",
+                        title=", ".join(f_uris) if f_uris else None,
                     ),
-                    class_="row mt-3",
+                    class_="row mt-3 small",
                 ),
                 class_="card-body",
             ),
-            class_="card",
+            class_="card mb-2",
         )
+
+    def _format_cards(items: list[dict], kind: str) -> ui.Tag:
+        """Render a list of mappings as a stack of cards (supports funnels per §16.13)."""
+        if not items:
+            return ui.div("Aucun mapping trouvé.", class_="alert alert-warning")
+        if len(items) > 1:
+            heading = ui.div(
+                ui.tags.span(
+                    f"⚠ Funnel détecté : {len(items)} mappings",
+                    class_="badge bg-warning text-dark me-2",
+                ),
+                class_="mb-2",
+            )
+        else:
+            heading = ui.div()
+        return ui.div(heading, *[_format_one_card(m, kind) for m in items])
 
     @output
     @render.ui
     def split_forward_card():
         pair = pair_data()
-        return _format_card(pair["forward"] if pair else None, "forward")
+        if pair is None:
+            return ui.div("Saisir un code source et cliquer sur Afficher.",
+                          class_="text-muted small")
+        return _format_cards(pair.get("forward") or [], "forward")
 
     @output
     @render.ui
     def split_reverse_card():
         pair = pair_data()
-        return _format_card(pair["reverse"] if pair else None, "reverse")
+        if pair is None:
+            return ui.div()
+        return _format_cards(pair.get("reverse") or [], "reverse")
 
     @output
     @render.ui
@@ -655,9 +848,24 @@ def split_bidir_server(input, output, session):
             "C10_NOT_IN_FORWARD":  "secondary",
             "NO_DATA":             "secondary",
         }.get(coherence, "secondary")
+        # Add source context header (libellé of the source code)
+        src_label = pair.get("source_label") or ""
+        src_header = ui.div(
+            ui.tags.strong(f"Source : {pair.get('source_code')}"),
+            ui.tags.small(f" — {src_label}",
+                          class_="text-muted ms-2") if src_label else "",
+            ui.tags.small(
+                f" (chapitre {pair.get('source_chapter')})",
+                class_="text-muted ms-2",
+            ) if pair.get("source_chapter") else "",
+            class_="mb-2",
+        )
         return ui.div(
-            ui.tags.strong(f"Cohérence round-trip : "),
-            ui.HTML(f'<span class="badge bg-{color}">{coherence}</span>'), " ",
-            explanation,
-            class_=f"alert alert-{color}",
+            src_header,
+            ui.div(
+                ui.tags.strong("Cohérence round-trip : "),
+                ui.HTML(f'<span class="badge bg-{color}">{coherence}</span>'), " ",
+                explanation,
+                class_=f"alert alert-{color}",
+            ),
         )
